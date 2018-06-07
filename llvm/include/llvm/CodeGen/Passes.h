@@ -400,6 +400,7 @@ namespace llvm {
   /// This pass splits the stack into a safe stack and an unsafe stack to
   /// protect against stack-based overflow vulnerabilities.
   FunctionPass *createSafeStackPass();
+  ModulePass *createStackSafetyPass();
 
   /// This pass detects subregister lanes in a virtual register that are used
   /// independently of other lanes and splits them into separate virtual
