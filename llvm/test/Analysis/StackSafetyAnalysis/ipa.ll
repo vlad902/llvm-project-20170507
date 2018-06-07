@@ -1,9 +1,6 @@
 ; RUN: opt -S -stack-safety < %s | FileCheck %s
 
 ; !!! Missing tests:
-; * more than 1 call depth
-; * offset-from-alloca
-; * offset-from-param
 ; * alloca passed through 2 params in the same call
 ; * recursion
 ; * "bad" recursion (+1 offset on each step)
@@ -113,5 +110,77 @@ entry:
   %x1 = bitcast i32* %x to i8*
 ; CHECK: %x = alloca i32, align 4{{$}}
   %x2 = call i8* @ReturnDependent(i8* %x1)
+  ret void
+}
+
+; access range [2, 6)
+define void @Rec0(i8* %p) {
+entry:
+  %p1 = getelementptr i8, i8* %p, i64 2
+  call void @Write4(i8* %p1)
+  ret void
+}
+
+; access range [3, 7)
+define void @Rec1(i8* %p) {
+entry:
+  %p1 = getelementptr i8, i8* %p, i64 1
+  call void @Rec0(i8* %p1)
+  ret void
+}
+
+; access range [-2, 2)
+define void @Rec2(i8* %p) {
+entry:
+  %p1 = getelementptr i8, i8* %p, i64 -5
+  call void @Rec1(i8* %p1)
+  ret void
+}
+
+define void @f8left() {
+; CHECK-LABEL: define void @f8
+entry:
+  %x = alloca i64, align 4
+  %x1 = bitcast i64* %x to i8*
+  %x2 = getelementptr i8, i8* %x1, i64 2
+; 2 + [-2, 2) = [0, 4) => OK
+; CHECK: %x = alloca i64, align 4, !stack-safe
+  call void @Rec2(i8* %x2)
+  ret void
+}
+
+define void @f8right() {
+; CHECK-LABEL: define void @f8
+entry:
+  %x = alloca i64, align 4
+  %x1 = bitcast i64* %x to i8*
+  %x2 = getelementptr i8, i8* %x1, i64 6
+; 6 + [-2, 2) = [4, 8) => OK
+; CHECK: %x = alloca i64, align 4, !stack-safe
+  call void @Rec2(i8* %x2)
+  ret void
+}
+
+define void @f8oobleft() {
+; CHECK-LABEL: define void @f8oobleft
+entry:
+  %x = alloca i64, align 4
+  %x1 = bitcast i64* %x to i8*
+  %x2 = getelementptr i8, i8* %x1, i64 1
+; 1 + [-2, 2) = [-1, 3) => NOT OK
+; CHECK: %x = alloca i64, align 4{{$}}
+  call void @Rec2(i8* %x2)
+  ret void
+}
+
+define void @f8oobright() {
+; CHECK-LABEL: define void @f8oobright
+entry:
+  %x = alloca i64, align 4
+  %x1 = bitcast i64* %x to i8*
+  %x2 = getelementptr i8, i8* %x1, i64 7
+; 7 + [-2, 2) = [5, 9) => NOT OK
+; CHECK: %x = alloca i64, align 4{{$}}
+  call void @Rec2(i8* %x2)
   ret void
 }
