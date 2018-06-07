@@ -382,6 +382,8 @@ bool StackSafety::analyzeAllUses(Value *Ptr, UseSummary &US) {
 bool StackSafety::run(FunctionSummary &FS) {
   assert(!F.isDeclaration() && "Can't run StackSafety on a function declaration");
 
+  LLVM_DEBUG(dbgs() << "[StackSafety] " << F.getName() << "\n");
+
   for (Instruction &I : instructions(&F)) {
     if (auto AI = dyn_cast<AllocaInst>(&I)) {
       uint64_t Size = getStaticAllocaAllocationSize(AI);
