@@ -2,13 +2,6 @@
 
 @sink = global i8* null, align 8
 
-
-; !!! Missing tests:
-; * va_arg
-; * array alloca
-; * dynamic alloca
-; * some kind of loop (though that would be more of a SCEV test)
-
 ; Address leaked.
 define void @LeakAddress() {
 ; CHECK-LABEL: define void @LeakAddress
@@ -142,4 +135,102 @@ entry:
 ; CHECK: %x = alloca i32, align 4{{$}}
   store i8 0, i8* %x2, align 1
   ret void
+}
+
+define void @ArrayAlloca() {
+; CHECK-LABEL: define void @ArrayAlloca
+entry:
+  %x = alloca i32, i32 10, align 4
+; CHECK: %x = alloca i32, i32 10, align 4, !stack-safe
+  %x1 = bitcast i32* %x to i8*
+  %x2 = getelementptr i8, i8* %x1, i64 36
+  %x3 = bitcast i8* %x2 to i32*
+  store i32 0, i32* %x3, align 1
+  ret void
+}
+
+define void @ArrayAllocaOOB() {
+; CHECK-LABEL: define void @ArrayAllocaOOB
+entry:
+  %x = alloca i32, i32 10, align 4
+; CHECK: %x = alloca i32, i32 10, align 4{{$}}
+  %x1 = bitcast i32* %x to i8*
+  %x2 = getelementptr i8, i8* %x1, i64 37
+  %x3 = bitcast i8* %x2 to i32*
+  store i32 0, i32* %x3, align 1
+  ret void
+}
+
+define void @DynamicAllocaUnused(i64 %size) {
+; CHECK-LABEL: define void @DynamicAllocaUnused
+entry:
+  %x = alloca i32, i64 %size, align 16
+; CHECK: %x = alloca i32, i64 %size, align 16, !stack-safe
+  ret void
+}
+
+; Dynamic alloca with unknown size.
+define void @DynamicAlloca(i64 %size) {
+; CHECK-LABEL: define void @DynamicAlloca
+entry:
+  %x = alloca i32, i64 %size, align 16
+; CHECK: %x = alloca i32, i64 %size, align 16{{$}}
+  store i32 0, i32* %x, align 1
+  ret void
+}
+
+; Dynamic alloca with limited size.
+; FIXME: could be proved safe. Implement.
+define void @DynamicAllocaFiniteSizeRange(i1 zeroext %z) {
+; CHECK-LABEL: define void @DynamicAllocaFiniteSizeRange
+entry:
+  %size = select i1 %z, i64 3, i64 5
+  %x = alloca i32, i64 %size, align 16
+; CHECK: %x = alloca i32, i64 %size, align 16{{$}}
+  store i32 0, i32* %x, align 1
+  ret void
+}
+
+define signext i8 @SimpleLoop() {
+entry:
+  %x = alloca [10 x i8], align 1
+; CHECK: %x = alloca [10 x i8], align 1, !stack-safe
+  %0 = getelementptr inbounds [10 x i8], [10 x i8]* %x, i64 0, i64 0
+  %lftr.limit = getelementptr inbounds [10 x i8], [10 x i8]* %x, i64 0, i64 10
+  br label %for.body
+
+for.body:
+  %sum.010 = phi i8 [ 0, %entry ], [ %add, %for.body ]
+  %p.09 = phi i8* [ %0, %entry ], [ %incdec.ptr, %for.body ]
+  %incdec.ptr = getelementptr inbounds i8, i8* %p.09, i64 1
+  %1 = load volatile i8, i8* %p.09, align 1
+  %add = add i8 %1, %sum.010
+  %exitcond = icmp eq i8* %incdec.ptr, %lftr.limit
+  br i1 %exitcond, label %for.cond.cleanup, label %for.body
+
+for.cond.cleanup:
+  ret i8 %add
+}
+
+; OOB in a loop.
+define signext i8 @SimpleLoopOOB() {
+entry:
+  %x = alloca [10 x i8], align 1
+; CHECK: %x = alloca [10 x i8], align 1{{$}}
+  %0 = getelementptr inbounds [10 x i8], [10 x i8]* %x, i64 0, i64 0
+ ; 11 iterations
+  %lftr.limit = getelementptr inbounds [10 x i8], [10 x i8]* %x, i64 0, i64 11
+  br label %for.body
+
+for.body:
+  %sum.010 = phi i8 [ 0, %entry ], [ %add, %for.body ]
+  %p.09 = phi i8* [ %0, %entry ], [ %incdec.ptr, %for.body ]
+  %incdec.ptr = getelementptr inbounds i8, i8* %p.09, i64 1
+  %1 = load volatile i8, i8* %p.09, align 1
+  %add = add i8 %1, %sum.010
+  %exitcond = icmp eq i8* %incdec.ptr, %lftr.limit
+  br i1 %exitcond, label %for.cond.cleanup, label %for.body
+
+for.cond.cleanup:
+  ret i8 %add
 }
