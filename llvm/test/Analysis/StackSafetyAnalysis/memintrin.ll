@@ -35,6 +35,29 @@ entry:
   ret void
 }
 
+define void @MemsetNonConst(i32 %size) {
+; CHECK-LABEL: define void @MemsetNonConst
+entry:
+  %x = alloca i32, align 4
+; CHECK: %x = alloca i32, align 4{{$}}
+  %x1 = bitcast i32* %x to i8*
+  call void @llvm.memset.p0i8.i32(i8* %x1, i8 42, i32 %size, i1 false)
+  ret void
+}
+
+; FIXME: memintrinsics should look at size range when possible
+; Right now we refuse any non-constant size.
+define void @MemsetNonConstInBounds(i1 zeroext %z) {
+; CHECK-LABEL: define void @MemsetNonConstInBounds
+entry:
+  %x = alloca i32, align 4
+; CHECK: %x = alloca i32, align 4{{$}}
+  %x1 = bitcast i32* %x to i8*
+  %size = select i1 %z, i32 3, i32 4
+  call void @llvm.memset.p0i8.i32(i8* %x1, i8 42, i32 %size, i1 false)
+  ret void
+}
+
 define void @MemcpyInBounds() {
 ; CHECK-LABEL: define void @MemcpyInBounds
 entry:
