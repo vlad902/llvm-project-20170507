@@ -1,10 +1,5 @@
 ; RUN: opt -S -stack-safety < %s | FileCheck %s
 
-; !!! Missing tests:
-; * alloca passed through 2 params in the same call
-; * recursion
-; * "bad" recursion (+1 offset on each step)
-
 define void @Write1(i8* %p) {
 entry:
   store i8 0, i8* %p, align 1
@@ -15,6 +10,15 @@ define void @Write4(i8* %p) {
 entry:
   %0 = bitcast i8* %p to i32*
   store i32 0, i32* %0, align 1
+  ret void
+}
+
+define void @Write4_2(i8* %p, i8* %q) {
+entry:
+  %0 = bitcast i8* %p to i32*
+  store i32 0, i32* %0, align 1
+  %1 = bitcast i8* %q to i32*
+  store i32 0, i32* %1, align 1
   ret void
 }
 
@@ -182,5 +186,109 @@ entry:
 ; 7 + [-2, 2) = [5, 9) => NOT OK
 ; CHECK: %x = alloca i64, align 4{{$}}
   call void @Rec2(i8* %x2)
+  ret void
+}
+
+define void @TwoArguments() {
+; CHECK-LABEL: define void @TwoArguments
+entry:
+  %x = alloca i64, align 4
+  %x1 = bitcast i64* %x to i8*
+  %x2 = getelementptr i8, i8* %x1, i64 4
+; CHECK: %x = alloca i64, align 4, !stack-safe
+  call void @Write4_2(i8* %x2, i8* %x1)
+  ret void
+}
+
+define void @TwoArgumentsOOBOne() {
+; CHECK-LABEL: define void @TwoArgumentsOOBOne
+entry:
+  %x = alloca i64, align 4
+  %x1 = bitcast i64* %x to i8*
+  %x2 = getelementptr i8, i8* %x1, i64 5
+; CHECK: %x = alloca i64, align 4{{$}}
+  call void @Write4_2(i8* %x2, i8* %x1)
+  ret void
+}
+
+define void @TwoArgumentsOOBOther() {
+; CHECK-LABEL: define void @TwoArgumentsOOBOther
+entry:
+  %x = alloca i64, align 4
+  %x0 = bitcast i64* %x to i8*
+  %x1 = getelementptr i8, i8* %x0, i64 -1
+  %x2 = getelementptr i8, i8* %x0, i64 4
+; CHECK: %x = alloca i64, align 4{{$}}
+  call void @Write4_2(i8* %x2, i8* %x1)
+  ret void
+}
+
+define void @TwoArgumentsOOBBoth() {
+; CHECK-LABEL: define void @TwoArgumentsOOBBoth
+entry:
+  %x = alloca i64, align 4
+  %x0 = bitcast i64* %x to i8*
+  %x1 = getelementptr i8, i8* %x0, i64 -1
+  %x2 = getelementptr i8, i8* %x0, i64 5
+; CHECK: %x = alloca i64, align 4{{$}}
+  call void @Write4_2(i8* %x2, i8* %x1)
+  ret void
+}
+
+; Recursive function that passes %acc unchanged => access range [0, 4).
+define void @RecursiveNoOffset(i32* %p, i32 %size, i32* %acc) {
+entry:
+  %cmp = icmp eq i32 %size, 0
+  br i1 %cmp, label %return, label %if.end
+
+if.end:
+  %0 = load i32, i32* %p, align 4
+  %1 = load i32, i32* %acc, align 4
+  %add = add nsw i32 %1, %0
+  store i32 %add, i32* %acc, align 4
+  %add.ptr = getelementptr inbounds i32, i32* %p, i64 1
+  %sub = add nsw i32 %size, -1
+  tail call void @RecursiveNoOffset(i32* %add.ptr, i32 %sub, i32* %acc)
+  ret void
+
+return:
+  ret void
+}
+
+define i32 @TestRecursiveNoOffset(i32* %p, i32 %size) {
+; CHECK-LABEL: define i32 @TestRecursiveNoOffset
+entry:
+  %sum = alloca i32, align 4
+; CHECK: %sum = alloca i32, align 4, !stack-safe
+  %0 = bitcast i32* %sum to i8*
+  store i32 0, i32* %sum, align 4
+  call void @RecursiveNoOffset(i32* %p, i32 %size, i32* %sum)
+  %1 = load i32, i32* %sum, align 4
+  ret i32 %1
+}
+
+; Recursive function that advances %acc on each iteration => access range unlimited.
+define void @RecursiveWithOffset(i32 %size, i32* %acc) {
+entry:
+  %cmp = icmp eq i32 %size, 0
+  br i1 %cmp, label %return, label %if.end
+
+if.end:
+  store i32 0, i32* %acc, align 4
+  %acc2 = getelementptr inbounds i32, i32* %acc, i64 1
+  %sub = add nsw i32 %size, -1
+  tail call void @RecursiveWithOffset(i32 %sub, i32* %acc2)
+  ret void
+
+return:
+  ret void
+}
+
+define void @TestRecursiveWithOffset(i32 %size) {
+; CHECK-LABEL: define void @TestRecursiveWithOffset
+entry:
+  %sum = alloca i32, i64 16, align 4
+; CHECK: %sum = alloca i32, i64 16, align 4{{$}}
+  call void @RecursiveWithOffset(i32 %size, i32* %sum)
   ret void
 }
