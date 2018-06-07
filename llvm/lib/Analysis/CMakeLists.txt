@@ -75,6 +75,7 @@ add_llvm_library(LLVMAnalysis
   ScalarEvolutionAliasAnalysis.cpp
   ScalarEvolutionExpander.cpp
   ScalarEvolutionNormalization.cpp
+  StackSafetyAnalysis.cpp
   SyntheticCountsUtils.cpp
   TargetLibraryInfo.cpp
   TargetTransformInfo.cpp
