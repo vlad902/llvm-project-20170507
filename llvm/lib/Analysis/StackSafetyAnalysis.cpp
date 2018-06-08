@@ -691,6 +691,15 @@ bool StackSafetyWrapperPass::doFinalization(Module &M) {
 
 char StackSafetyWrapperPass::ID = 0;
 
+AnalysisKey StackSafetyAnalysis::Key;
+
+StackSafetyInfo StackSafetyAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
+  auto &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
+  return StackSafetyInfo([&FAM](const Function &F) {
+    return &FAM.getResult<ScalarEvolutionAnalysis>(*const_cast<Function*>(&F));
+  });
+}
+
 } // namespace llvm
 
 INITIALIZE_PASS_BEGIN(StackSafetyWrapperPass, DEBUG_TYPE,
