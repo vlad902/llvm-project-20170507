@@ -22,13 +22,30 @@ namespace llvm {
 
 class Function;
 class Module;
-class StackSafety;
+class ScalarEvolution;
+
+struct FunctionStackSummary;
+
+class StackSafetyInfo {
+  using Callback = std::function<ScalarEvolution *(const Function &F)>;
+  Callback GetSECallback;
+
+public:
+  StackSafetyInfo(Callback GetSECallback) : GetSECallback(GetSECallback) {}
+  void run(Function &F, FunctionStackSummary &FS) const;
+};
 
 class StackSafetyWrapperPass : public ModulePass {
+  std::unique_ptr<StackSafetyInfo> SSI;
+
 public:
   static char ID;
 
   StackSafetyWrapperPass();
+
+  StackSafetyInfo &getSSI() { return *SSI; }
+  bool doInitialization(Module &M);
+  bool doFinalization(Module &M);
 
   bool runOnModule(Module &M) override;
   void getAnalysisUsage(AnalysisUsage &AU) const override;

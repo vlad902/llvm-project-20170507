@@ -95,6 +95,10 @@ public:
   }
 };
 
+} // end anonymous namespace
+
+namespace llvm {
+
 struct UseSummary {
   ConstantRange Range;
   ConstantRange LocalRange;
@@ -142,8 +146,8 @@ struct ParamSummary {
   }
 };
 
-// FunctionSummary could also describe return value as depending on one or more of its arguments.
-struct FunctionSummary {
+// FunctionStackSummary could also describe return value as depending on one or more of its arguments.
+struct FunctionStackSummary {
   SmallVector<AllocaSummary, 4> Allocas;
   SmallVector<ParamSummary, 4> Params;
   void dump(StringRef Name) {
@@ -154,6 +158,10 @@ struct FunctionSummary {
       AS.dump();
   }
 };
+
+} // end namespace llvm
+
+namespace {
 
 class StackSafetyLocalAnalysis {
   Function &F;
@@ -184,7 +192,7 @@ public:
 
   // Run the transformation on the associated function.
   // Returns whether the function was changed.
-  bool run(FunctionSummary&);
+  bool run(FunctionStackSummary&);
 };
 
 uint64_t StackSafetyLocalAnalysis::getStaticAllocaAllocationSize(const AllocaInst* AI) {
@@ -379,7 +387,7 @@ bool StackSafetyLocalAnalysis::analyzeAllUses(Value *Ptr, UseSummary &US) {
   return true;
 }
 
-bool StackSafetyLocalAnalysis::run(FunctionSummary &FS) {
+bool StackSafetyLocalAnalysis::run(FunctionStackSummary &FS) {
   assert(!F.isDeclaration() && "Can't run StackSafety on a function declaration");
 
   LLVM_DEBUG(dbgs() << "[StackSafety] " << F.getName() << "\n");
@@ -409,7 +417,7 @@ bool StackSafetyLocalAnalysis::run(FunctionSummary &FS) {
 }
 
 class StackSafetyDataFlowAnalysis {
-  StringMap<FunctionSummary> Functions;
+  StringMap<FunctionStackSummary> Functions;
   
 public:
 
@@ -419,7 +427,7 @@ public:
   //   AU.addRequired<AssumptionCacheTracker>();
   // }
 
-  // bool analyzeFunction(Function &F, FunctionSummary &Summary,
+  // bool analyzeFunction(Function &F, FunctionStackSummary &Summary,
   //                      ScalarEvolution *SE) {
   //   if (F.isDeclaration()) {
   //     LLVM_DEBUG(dbgs() << "[StackSafety]     function definition"
@@ -454,7 +462,7 @@ public:
     // Unknown callee (outside of LTO domain, dso_preemptable, or an indirect call).
     if (IT == Functions.end())
       return ConstantRange(64);
-    FunctionSummary &FS = IT->getValue();
+    FunctionStackSummary &FS = IT->getValue();
     if (ParamNo >= FS.Params.size()) // possibly vararg
       return ConstantRange(64);
     return Local ? FS.Params[ParamNo].Summary.LocalRange : FS.Params[ParamNo].Summary.Range;
@@ -486,7 +494,7 @@ public:
       return;
     }
 
-    FunctionSummary &FS = IT->getValue();
+    FunctionStackSummary &FS = IT->getValue();
     if (CS.ParamNo >= FS.Params.size()) {
       printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
       dbgs() << Indent << "  unknown argument\n";
@@ -545,7 +553,7 @@ public:
     return false;
   }
 
-  void describeFunction(StringRef Name, FunctionSummary &FS) {
+  void describeFunction(StringRef Name, FunctionStackSummary &FS) {
     dbgs() << "  @" << Name << "\n";
     bool Safe = true;
     for (auto &AS : FS.Allocas) {
@@ -555,7 +563,7 @@ public:
       dbgs() << "    function-safe\n";
   }
 
-  bool addMetadata(Function &F, FunctionSummary &Summary) {
+  bool addMetadata(Function &F, FunctionStackSummary &Summary) {
     bool Changed = false;
     for (auto &AS : Summary.Allocas) {
       ConstantRange AllocaRange{APInt(64, 0), APInt(64, AS.Size)};
@@ -590,7 +598,7 @@ public:
     bool Changed = false;
     // FIXME: depth-first?
     for (auto &FN : Functions) {
-      FunctionSummary &FP = FN.getValue();
+      FunctionStackSummary &FP = FN.getValue();
       for (auto &AS : FP.Allocas)
         Changed |= updateOneValue(AS.Summary, UpdateToFullSet);
       for (auto &PS : FP.Params)
@@ -615,14 +623,10 @@ public:
     return false;
   }
 
-  bool run(Module &M,
-           std::function<ScalarEvolution *(const Function &F)> GetSECallback) {
-    for (auto &F : M.functions()) {
-      if (!F.isDeclaration()) {
-        StackSafetyLocalAnalysis SSLA(F, F.getParent()->getDataLayout(), *GetSECallback(F));
-        SSLA.run(Functions[F.getName()]);
-      }
-    }
+  bool run(Module &M, StackSafetyInfo *SSI) {
+    for (auto &F : M.functions())
+      if (!F.isDeclaration())
+        SSI->run(F, Functions[F.getName()]);
 
     LLVM_DEBUG(for (auto &FN : Functions) FN.getValue().dump(FN.getKey()));
 
@@ -645,9 +649,15 @@ public:
     return Changed;
   }
 };
+
 } // end anonymous namespace
 
 namespace llvm {
+
+void StackSafetyInfo::run(Function &F, FunctionStackSummary &FS) const {
+  StackSafetyLocalAnalysis SSLA(F, F.getParent()->getDataLayout(), *GetSECallback(F));
+  SSLA.run(FS);
+}
 
 StackSafetyWrapperPass::StackSafetyWrapperPass() : ModulePass(ID) {
   initializeStackSafetyWrapperPassPass(*PassRegistry::getPassRegistry());
@@ -659,14 +669,24 @@ void StackSafetyWrapperPass::getAnalysisUsage(AnalysisUsage &AU) const {
 
 bool StackSafetyWrapperPass::runOnModule(Module &M) {
   StackSafetyDataFlowAnalysis SSDFA;
-  bool Success = SSDFA.run(M, [this](const Function &F) {
-    return &this->getAnalysis<ScalarEvolutionWrapperPass>(
-                    *const_cast<Function *>(&F))
-                .getSE();
-  });
+  bool Success = SSDFA.run(M, &getSSI());
   if (!Success)
     return false;
   return SSDFA.addAllMetadata(M);
+}
+
+bool StackSafetyWrapperPass::doInitialization(Module &M) {
+  SSI.reset(new StackSafetyInfo([this](const Function &F) {
+    return &this->getAnalysis<ScalarEvolutionWrapperPass>(
+                    *const_cast<Function *>(&F))
+                .getSE();
+  }));
+  return false;
+}
+
+bool StackSafetyWrapperPass::doFinalization(Module &M) {
+  SSI.reset();
+  return false;
 }
 
 char StackSafetyWrapperPass::ID = 0;
