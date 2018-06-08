@@ -275,12 +275,12 @@ bool StackSafety::analyzeAllUses(Value *Ptr, UseSummary &US) {
       case Instruction::Load: {
         ConstantRange AccessRange =
             GetAccessRange(UI, Ptr, DL.getTypeStoreSize(I->getType()));
-	// LLVM_DEBUG(dbgs() << *I << "\n    load with range " << AccessRange << "\n");
-	if (!US.Range.contains(AccessRange)) {
-	  US.BadI = I;
-	  US.Reason = "load oob";
-	}
-	US.Range = US.Range.unionWith(AccessRange);
+        // LLVM_DEBUG(dbgs() << *I << "\n    load with range " << AccessRange << "\n");
+        if (!US.Range.contains(AccessRange)) {
+          US.BadI = I;
+          US.Reason = "load oob";
+        }
+        US.Range = US.Range.unionWith(AccessRange);
         break;
       }
 
@@ -290,9 +290,9 @@ bool StackSafety::analyzeAllUses(Value *Ptr, UseSummary &US) {
       case Instruction::Store: {
         if (V == I->getOperand(0)) {
           // Stored the pointer - conservatively assume it may be unsafe.
-	  US.Range = ConstantRange(64);
-	  US.BadI = I;
-	  US.Reason = "store leak";
+          US.Range = ConstantRange(64);
+          US.BadI = I;
+          US.Reason = "store leak";
 
           // LLVM_DEBUG(dbgs() << "[StackSafety] Unsafe alloca: " << *Ptr
           //              << "\n            store of address: " << *I << "\n");
@@ -301,20 +301,20 @@ bool StackSafety::analyzeAllUses(Value *Ptr, UseSummary &US) {
 
         ConstantRange AccessRange = GetAccessRange(
             UI, Ptr, DL.getTypeStoreSize(I->getOperand(0)->getType()));
-	// LLVM_DEBUG(dbgs() << *I << "\n    store with range " << AccessRange << "\n");
-	if (!US.Range.contains(AccessRange)) {
-	  US.BadI = I;
-	  US.Reason = "store oob";
-	}
-	US.Range = US.Range.unionWith(AccessRange);
+        // LLVM_DEBUG(dbgs() << *I << "\n    store with range " << AccessRange << "\n");
+        if (!US.Range.contains(AccessRange)) {
+          US.BadI = I;
+          US.Reason = "store oob";
+        }
+        US.Range = US.Range.unionWith(AccessRange);
         break;
       }
 
       case Instruction::Ret:
         // Information leak.
-	US.Range = ConstantRange(64);
-	US.BadI = I;
-	US.Reason = "ret leak";
+        US.Range = ConstantRange(64);
+        US.BadI = I;
+        US.Reason = "ret leak";
         return false;
 
       case Instruction::Call:
@@ -330,10 +330,10 @@ bool StackSafety::analyzeAllUses(Value *Ptr, UseSummary &US) {
         if (const MemIntrinsic *MI = dyn_cast<MemIntrinsic>(I)) {
           ConstantRange AccessRange = GetMemIntrinsicAccessRange(MI, UI, Ptr);
           // LLVM_DEBUG(dbgs() << *I << "\n    memintrinsic with range " << AccessRange << "\n");
-	  if (!US.Range.contains(AccessRange)) {
-	    US.BadI = I;
-	    US.Reason = "memintrinsic oob";
-	  }
+          if (!US.Range.contains(AccessRange)) {
+            US.BadI = I;
+            US.Reason = "memintrinsic oob";
+          }
           US.Range = US.Range.unionWith(AccessRange);
           break;
         }
@@ -342,14 +342,14 @@ bool StackSafety::analyzeAllUses(Value *Ptr, UseSummary &US) {
         const Function *Callee =
             dyn_cast<Function>(CS.getCalledValue()->stripPointerCasts());
         if (!Callee) {
-	  US.BadI = I;
-	  US.Reason = "indirect call";
+          US.BadI = I;
+          US.Reason = "indirect call";
           US.Range = ConstantRange(64);
           return false;
         }
         if (!Callee->isDSOLocal()) {
-	  US.BadI = I;
-	  US.Reason = "dso_preemptable symbol";
+          US.BadI = I;
+          US.Reason = "dso_preemptable symbol";
           US.Range = ConstantRange(64);
           return false;
         }
@@ -504,9 +504,9 @@ public:
     if (!LocalSafe) {
       printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
       if (PS.Summary.BadI) {
-	dbgs() << Indent << "  " << PS.Summary.Reason << ": " << *PS.Summary.BadI << "\n";
+        dbgs() << Indent << "  " << PS.Summary.Reason << ": " << *PS.Summary.BadI << "\n";
       } else {
-	dbgs() << Indent << "  unsafe local access (unknown)\n";
+        dbgs() << Indent << "  unsafe local access (unknown)\n";
       }
       return;
     }
@@ -529,9 +529,9 @@ public:
     bool LocalSafe = AllocaRange.contains(AS.Summary.LocalRange);
     if (!LocalSafe) {
       if (AS.Summary.BadI) {
-	dbgs() << "      " << AS.Summary.Reason << ": " << *AS.Summary.BadI << "\n";
+        dbgs() << "      " << AS.Summary.Reason << ": " << *AS.Summary.BadI << "\n";
       } else {
-	dbgs() << "      unsafe local access (unknown)\n";
+        dbgs() << "      unsafe local access (unknown)\n";
       }
       return false;
     }
@@ -577,10 +577,10 @@ public:
       CalleeRange = CalleeRange.add(CS.Range);
       if (!US.Range.contains(CalleeRange)) {
         Changed = true;
-	if (UpdateToFullSet)
-	  US.Range = ConstantRange(64, true);
-	else
-	  US.Range = US.Range.unionWith(CalleeRange);
+        if (UpdateToFullSet)
+          US.Range = ConstantRange(64, true);
+        else
+          US.Range = US.Range.unionWith(CalleeRange);
       }
     }
     return Changed;
@@ -592,9 +592,9 @@ public:
     for (auto &FN : Functions) {
       FunctionSummary &FP = FN.getValue();
       for (auto &AS : FP.Allocas)
-	Changed |= updateOneValue(AS.Summary, UpdateToFullSet);
+        Changed |= updateOneValue(AS.Summary, UpdateToFullSet);
       for (auto &PS : FP.Params)
-	Changed |= updateOneValue(PS.Summary, UpdateToFullSet);
+        Changed |= updateOneValue(PS.Summary, UpdateToFullSet);
     }
     LLVM_DEBUG(dbgs() << "=== iteration " << IterNo << " "
                  << (UpdateToFullSet ? "(full-set)" : "")
@@ -640,7 +640,7 @@ public:
     bool Changed = false;
     for (auto &F : M.functions())
       if (!F.isDeclaration())
-	Changed |= addMetadata(F, Functions[F.getName()]);
+        Changed |= addMetadata(F, Functions[F.getName()]);
 
     return Changed;
   }
