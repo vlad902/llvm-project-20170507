@@ -675,7 +675,6 @@ char StackSafetyWrapperPass::ID = 0;
 
 INITIALIZE_PASS_BEGIN(StackSafetyWrapperPass, DEBUG_TYPE,
                       "Stack safety analysis pass", false, false)
-INITIALIZE_PASS_DEPENDENCY(TargetPassConfig)
 INITIALIZE_PASS_END(StackSafetyWrapperPass, DEBUG_TYPE,
                     "Stack safety analysis pass", false, false)
 
