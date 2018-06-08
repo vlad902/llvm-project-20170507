@@ -276,7 +276,7 @@ bool StackSafety::analyzeAllUses(Value *Ptr, UseSummary &US) {
         ConstantRange AccessRange =
             GetAccessRange(UI, Ptr, DL.getTypeStoreSize(I->getType()));
 	// LLVM_DEBUG(dbgs() << *I << "\n    load with range " << AccessRange << "\n");
-	if (!US.Range.contains(AccessRange) && !US.BadI) {
+	if (!US.Range.contains(AccessRange)) {
 	  US.BadI = I;
 	  US.Reason = "load oob";
 	}
@@ -291,10 +291,8 @@ bool StackSafety::analyzeAllUses(Value *Ptr, UseSummary &US) {
         if (V == I->getOperand(0)) {
           // Stored the pointer - conservatively assume it may be unsafe.
 	  US.Range = ConstantRange(64);
-	  if (!US.BadI) {
-	    US.BadI = I;
-	    US.Reason = "store leak";
-	  }
+	  US.BadI = I;
+	  US.Reason = "store leak";
 
           // LLVM_DEBUG(dbgs() << "[StackSafety] Unsafe alloca: " << *Ptr
           //              << "\n            store of address: " << *I << "\n");
@@ -304,7 +302,7 @@ bool StackSafety::analyzeAllUses(Value *Ptr, UseSummary &US) {
         ConstantRange AccessRange = GetAccessRange(
             UI, Ptr, DL.getTypeStoreSize(I->getOperand(0)->getType()));
 	// LLVM_DEBUG(dbgs() << *I << "\n    store with range " << AccessRange << "\n");
-	if (!US.Range.contains(AccessRange) && !US.BadI) {
+	if (!US.Range.contains(AccessRange)) {
 	  US.BadI = I;
 	  US.Reason = "store oob";
 	}
@@ -315,10 +313,8 @@ bool StackSafety::analyzeAllUses(Value *Ptr, UseSummary &US) {
       case Instruction::Ret:
         // Information leak.
 	US.Range = ConstantRange(64);
-	if (!US.BadI) {
-	  US.BadI = I;
-	  US.Reason = "ret leak";
-	}
+	US.BadI = I;
+	US.Reason = "ret leak";
         return false;
 
       case Instruction::Call:
@@ -334,7 +330,7 @@ bool StackSafety::analyzeAllUses(Value *Ptr, UseSummary &US) {
         if (const MemIntrinsic *MI = dyn_cast<MemIntrinsic>(I)) {
           ConstantRange AccessRange = GetMemIntrinsicAccessRange(MI, UI, Ptr);
           // LLVM_DEBUG(dbgs() << *I << "\n    memintrinsic with range " << AccessRange << "\n");
-	  if (!US.Range.contains(AccessRange) && !US.BadI) {
+	  if (!US.Range.contains(AccessRange)) {
 	    US.BadI = I;
 	    US.Reason = "memintrinsic oob";
 	  }
@@ -346,18 +342,14 @@ bool StackSafety::analyzeAllUses(Value *Ptr, UseSummary &US) {
         const Function *Callee =
             dyn_cast<Function>(CS.getCalledValue()->stripPointerCasts());
         if (!Callee) {
-          if (!US.BadI) {
-            US.BadI = I;
-            US.Reason = "indirect call";
-          }
+	  US.BadI = I;
+	  US.Reason = "indirect call";
           US.Range = ConstantRange(64);
           return false;
         }
         if (!Callee->isDSOLocal()) {
-          if (!US.BadI) {
-            US.BadI = I;
-            US.Reason = "dso_preemptable symbol";
-          }
+	  US.BadI = I;
+	  US.Reason = "dso_preemptable symbol";
           US.Range = ConstantRange(64);
           return false;
         }
@@ -635,7 +627,7 @@ public:
     LLVM_DEBUG(for (auto &FN : Functions) FN.getValue().dump(FN.getKey()));
 
     if (!runDataFlow()) {
-      errs() << "[stack-safety] Could not reach fixed point!\n";
+      LLVM_DEBUG(dbgs() << "[stack-safety] Could not reach fixed point!\n");
       return false;
     }
 
