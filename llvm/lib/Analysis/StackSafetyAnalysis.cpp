@@ -155,11 +155,11 @@ struct FunctionSummary {
   }
 };
 
-class StackSafety {
+class StackSafetyLocalAnalysis {
   Function &F;
   const DataLayout &DL;
   ScalarEvolution &SE;
-  
+
   Type *StackPtrTy;
   Type *IntPtrTy;
   Type *Int32Ty;
@@ -176,7 +176,7 @@ class StackSafety {
   bool analyzeAllUses(Value *Ptr, UseSummary &AS);
 
 public:
-  StackSafety(Function &F, const DataLayout &DL, ScalarEvolution &SE)
+  StackSafetyLocalAnalysis(Function &F, const DataLayout &DL, ScalarEvolution &SE)
       : F(F), DL(DL), SE(SE), StackPtrTy(Type::getInt8PtrTy(F.getContext())),
         IntPtrTy(DL.getIntPtrType(F.getContext())),
         Int32Ty(Type::getInt32Ty(F.getContext())),
@@ -187,7 +187,7 @@ public:
   bool run(FunctionSummary&);
 };
 
-uint64_t StackSafety::getStaticAllocaAllocationSize(const AllocaInst* AI) {
+uint64_t StackSafetyLocalAnalysis::getStaticAllocaAllocationSize(const AllocaInst* AI) {
   uint64_t Size = DL.getTypeAllocSize(AI->getAllocatedType());
   if (AI->isArrayAllocation()) {
     auto C = dyn_cast<ConstantInt>(AI->getArraySize());
@@ -198,7 +198,7 @@ uint64_t StackSafety::getStaticAllocaAllocationSize(const AllocaInst* AI) {
   return Size;
 }
 
-ConstantRange StackSafety::OffsetFromAlloca(Value *Addr,
+ConstantRange StackSafetyLocalAnalysis::OffsetFromAlloca(Value *Addr,
                                             const Value *AllocaPtr) {
   if (!SE.isSCEVable(Addr->getType()))
     return ConstantRange(64);
@@ -213,7 +213,7 @@ ConstantRange StackSafety::OffsetFromAlloca(Value *Addr,
   // return OffsetRange.getSingleElement()->getZExtValue();
 }
 
-ConstantRange StackSafety::GetAccessRange(Value *Addr, const Value *AllocaPtr,
+ConstantRange StackSafetyLocalAnalysis::GetAccessRange(Value *Addr, const Value *AllocaPtr,
                                           uint64_t AccessSize) {
   if (!SE.isSCEVable(Addr->getType()))
     return ConstantRange(64);
@@ -229,7 +229,7 @@ ConstantRange StackSafety::GetAccessRange(Value *Addr, const Value *AllocaPtr,
   return AccessRange;
 }
 
-ConstantRange StackSafety::GetMemIntrinsicAccessRange(const MemIntrinsic *MI,
+ConstantRange StackSafetyLocalAnalysis::GetMemIntrinsicAccessRange(const MemIntrinsic *MI,
                                                       const Use &U,
                                                       const Value *AllocaPtr) {
   if (auto MTI = dyn_cast<MemTransferInst>(MI)) {
@@ -251,7 +251,7 @@ ConstantRange StackSafety::GetMemIntrinsicAccessRange(const MemIntrinsic *MI,
 /// Check whether a given allocation must be put on the safe
 /// stack or not. The function analyzes all uses of AI and checks whether it is
 /// only accessed in a memory safe way (as decided statically).
-bool StackSafety::analyzeAllUses(Value *Ptr, UseSummary &US) {
+bool StackSafetyLocalAnalysis::analyzeAllUses(Value *Ptr, UseSummary &US) {
   // const Value *AllocaPtr = AS.AI;
   // uint64_t AllocaSize = AS.Size;
   // ConstantRange AllocaRange =
@@ -379,7 +379,7 @@ bool StackSafety::analyzeAllUses(Value *Ptr, UseSummary &US) {
   return true;
 }
 
-bool StackSafety::run(FunctionSummary &FS) {
+bool StackSafetyLocalAnalysis::run(FunctionSummary &FS) {
   assert(!F.isDeclaration() && "Can't run StackSafety on a function declaration");
 
   LLVM_DEBUG(dbgs() << "[StackSafety] " << F.getName() << "\n");
@@ -408,7 +408,7 @@ bool StackSafety::run(FunctionSummary &FS) {
   return true;
 }
 
-class StackSafetyAnalysis {
+class StackSafetyDataFlowAnalysis {
   StringMap<FunctionSummary> Functions;
   
 public:
@@ -619,8 +619,8 @@ public:
            std::function<ScalarEvolution *(const Function &F)> GetSECallback) {
     for (auto &F : M.functions()) {
       if (!F.isDeclaration()) {
-        StackSafety SS(F, F.getParent()->getDataLayout(), *GetSECallback(F));
-        SS.run(Functions[F.getName()]);
+        StackSafetyLocalAnalysis SSLA(F, F.getParent()->getDataLayout(), *GetSECallback(F));
+        SSLA.run(Functions[F.getName()]);
       }
     }
 
@@ -658,15 +658,15 @@ void StackSafetyWrapperPass::getAnalysisUsage(AnalysisUsage &AU) const {
 }
 
 bool StackSafetyWrapperPass::runOnModule(Module &M) {
-  StackSafetyAnalysis SSA;
-  bool Success = SSA.run(M, [this](const Function &F) {
+  StackSafetyDataFlowAnalysis SSDFA;
+  bool Success = SSDFA.run(M, [this](const Function &F) {
     return &this->getAnalysis<ScalarEvolutionWrapperPass>(
                     *const_cast<Function *>(&F))
                 .getSE();
   });
   if (!Success)
     return false;
-  return SSA.addAllMetadata(M);
+  return SSDFA.addAllMetadata(M);
 }
 
 char StackSafetyWrapperPass::ID = 0;
