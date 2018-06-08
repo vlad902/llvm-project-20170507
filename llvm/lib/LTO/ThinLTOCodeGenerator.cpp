@@ -489,9 +489,11 @@ ProcessThinLTOModule(Module &TheModule, ModuleSummaryIndex &Index,
     SmallVector<char, 128> OutputBuffer;
     {
       raw_svector_ostream OS(OutputBuffer);
-      ProfileSummaryInfo PSI(TheModule);
-      auto Index = buildModuleSummaryIndex(TheModule, nullptr, &PSI);
-      WriteBitcodeToFile(TheModule, OS, true, &Index);
+
+      // TODO: No unit tests reach this
+      legacy::PassManager PM;
+      PM.add(createWriteThinLTOBitcodePass(OS, nullptr));
+      PM.run(TheModule);
     }
     return make_unique<SmallVectorMemoryBuffer>(std::move(OutputBuffer));
   }

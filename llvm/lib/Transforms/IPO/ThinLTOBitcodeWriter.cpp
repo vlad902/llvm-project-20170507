@@ -11,6 +11,7 @@
 #include "llvm/Analysis/BasicAliasAnalysis.h"
 #include "llvm/Analysis/ModuleSummaryAnalysis.h"
 #include "llvm/Analysis/ProfileSummaryInfo.h"
+#include "llvm/Analysis/StackSafetyAnalysis.h"
 #include "llvm/Analysis/TypeMetadataUtils.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Constants.h"
@@ -197,14 +198,15 @@ void forEachVirtualFunction(Constant *C, function_ref<void(Function *)> Fn) {
 // regular LTO bitcode file to OS.
 void splitAndWriteThinLTOBitcode(
     raw_ostream &OS, raw_ostream *ThinLinkOS,
-    function_ref<AAResults &(Function &)> AARGetter, Module &M) {
+    function_ref<AAResults &(Function &)> AARGetter, Module &M,
+    const StackSafetyInfo *SSI) {
   std::string ModuleId = getUniqueModuleId(&M);
   if (ModuleId.empty()) {
     // We couldn't generate a module ID for this module, write it out as a
     // regular LTO module with an index for summary-based dead stripping.
     ProfileSummaryInfo PSI(M);
     M.addModuleFlag(Module::Error, "ThinLTO", uint32_t(0));
-    ModuleSummaryIndex Index = buildModuleSummaryIndex(M, nullptr, &PSI);
+    ModuleSummaryIndex Index = buildModuleSummaryIndex(M, nullptr, &PSI, SSI);
     WriteBitcodeToFile(M, OS, /*ShouldPreserveUseListOrder=*/false, &Index);
 
     if (ThinLinkOS)
@@ -379,13 +381,13 @@ void splitAndWriteThinLTOBitcode(
 
   // FIXME: Try to re-use BSI and PFI from the original module here.
   ProfileSummaryInfo PSI(M);
-  ModuleSummaryIndex Index = buildModuleSummaryIndex(M, nullptr, &PSI);
+  ModuleSummaryIndex Index = buildModuleSummaryIndex(M, nullptr, &PSI, SSI);
 
   // Mark the merged module as requiring full LTO. We still want an index for
   // it though, so that it can participate in summary-based dead stripping.
   MergedM->addModuleFlag(Module::Error, "ThinLTO", uint32_t(0));
   ModuleSummaryIndex MergedMIndex =
-      buildModuleSummaryIndex(*MergedM, nullptr, &PSI);
+      buildModuleSummaryIndex(*MergedM, nullptr, &PSI, SSI);
 
   SmallVector<char, 0> Buffer;
 
@@ -429,10 +431,11 @@ bool requiresSplit(Module &M) {
 
 void writeThinLTOBitcode(raw_ostream &OS, raw_ostream *ThinLinkOS,
                          function_ref<AAResults &(Function &)> AARGetter,
-                         Module &M, const ModuleSummaryIndex *Index) {
+                         Module &M, const ModuleSummaryIndex *Index,
+                         const StackSafetyInfo *SSI) {
   // See if this module has any type metadata. If so, we need to split it.
   if (requiresSplit(M))
-    return splitAndWriteThinLTOBitcode(OS, ThinLinkOS, AARGetter, M);
+    return splitAndWriteThinLTOBitcode(OS, ThinLinkOS, AARGetter, M, SSI);
 
   // Otherwise we can just write it out as a regular module.
 
@@ -471,13 +474,16 @@ public:
   bool runOnModule(Module &M) override {
     const ModuleSummaryIndex *Index =
         &(getAnalysis<ModuleSummaryIndexWrapperPass>().getIndex());
-    writeThinLTOBitcode(OS, ThinLinkOS, LegacyAARGetter(*this), M, Index);
+    const StackSafetyInfo *SSI =
+        &(getAnalysis<StackSafetyInfoWrapperPass>().getSSI());
+    writeThinLTOBitcode(OS, ThinLinkOS, LegacyAARGetter(*this), M, Index, SSI);
     return true;
   }
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.setPreservesAll();
     AU.addRequired<AssumptionCacheTracker>();
     AU.addRequired<ModuleSummaryIndexWrapperPass>();
+    AU.addRequired<StackSafetyInfoWrapperPass>();
     AU.addRequired<TargetLibraryInfoWrapperPass>();
   }
 };
@@ -488,6 +494,7 @@ INITIALIZE_PASS_BEGIN(WriteThinLTOBitcode, "write-thinlto-bitcode",
                       "Write ThinLTO Bitcode", false, true)
 INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker)
 INITIALIZE_PASS_DEPENDENCY(ModuleSummaryIndexWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(StackSafetyInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(TargetLibraryInfoWrapperPass)
 INITIALIZE_PASS_END(WriteThinLTOBitcode, "write-thinlto-bitcode",
                     "Write ThinLTO Bitcode", false, true)
@@ -501,10 +508,11 @@ PreservedAnalyses
 llvm::ThinLTOBitcodeWriterPass::run(Module &M, ModuleAnalysisManager &AM) {
   FunctionAnalysisManager &FAM =
       AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
+  StackSafetyInfo &SSI = AM.getResult<StackSafetyAnalysis>(M);
   writeThinLTOBitcode(OS, ThinLinkOS,
                       [&FAM](Function &F) -> AAResults & {
                         return FAM.getResult<AAManager>(F);
                       },
-                      M, &AM.getResult<ModuleSummaryIndexAnalysis>(M));
+                      M, &AM.getResult<ModuleSummaryIndexAnalysis>(M), &SSI);
   return PreservedAnalyses::all();
 }
