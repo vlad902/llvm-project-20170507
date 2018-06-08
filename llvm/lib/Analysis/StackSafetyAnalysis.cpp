@@ -353,6 +353,14 @@ bool StackSafety::analyzeAllUses(Value *Ptr, UseSummary &US) {
           US.Range = ConstantRange(64);
           return false;
         }
+        if (!Callee->isDSOLocal()) {
+          if (!US.BadI) {
+            US.BadI = I;
+            US.Reason = "dso_preemptable symbol";
+          }
+          US.Range = ConstantRange(64);
+          return false;
+        }
         ImmutableCallSite::arg_iterator B = CS.arg_begin(), E = CS.arg_end();
         for (ImmutableCallSite::arg_iterator A = B; A != E; ++A) {
           if (A->get() == V) {
@@ -451,7 +459,7 @@ public:
 
   ConstantRange getArgumentAccessRange(StringRef Name, unsigned ParamNo, bool Local = false) {
     auto IT = Functions.find(Name);
-    // Unknown callee (outside of LTO domain or an indirect call).
+    // Unknown callee (outside of LTO domain, dso_preemptable, or an indirect call).
     if (IT == Functions.end())
       return ConstantRange(64);
     FunctionSummary &FS = IT->getValue();
@@ -479,7 +487,7 @@ public:
     Visited.insert(CS.Callee);
 
     auto IT = Functions.find(CS.Callee);
-    // Unknown callee (outside of LTO domain or an indirect call).
+    // Unknown callee (outside of LTO domain, dso_preemptable, or an indirect call).
     if (IT == Functions.end()) {
       printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
       dbgs() << Indent << "  external call\n";

@@ -1,19 +1,19 @@
 ; RUN: opt -S -stack-safety < %s | FileCheck %s
 
-define void @Write1(i8* %p) {
+define dso_local void @Write1(i8* %p) {
 entry:
   store i8 0, i8* %p, align 1
   ret void
 }
 
-define void @Write4(i8* %p) {
+define dso_local void @Write4(i8* %p) {
 entry:
   %0 = bitcast i8* %p to i32*
   store i32 0, i32* %0, align 1
   ret void
 }
 
-define void @Write4_2(i8* %p, i8* %q) {
+define dso_local void @Write4_2(i8* %p, i8* %q) {
 entry:
   %0 = bitcast i8* %p to i32*
   store i32 0, i32* %0, align 1
@@ -22,16 +22,22 @@ entry:
   ret void
 }
 
-define void @Write8(i8* %p) {
+define dso_local void @Write8(i8* %p) {
 entry:
   %0 = bitcast i8* %p to i64*
   store i64 0, i64* %0, align 1
   ret void
 }
 
-declare void @ExternalCall(i8* %p)
+declare dso_local void @ExternalCall(i8* %p)
 
-define i8* @ReturnDependent(i8* %p) {
+define dso_preemptable void @PreemptableWrite1(i8* %p) {
+entry:
+  store i8 0, i8* %p, align 1
+  ret void
+}
+
+define dso_local i8* @ReturnDependent(i8* %p) {
 entry:
   %p2 = getelementptr i8, i8* %p, i64 2
   ret i8* %p2
@@ -105,6 +111,17 @@ entry:
   ret void
 }
 
+; Call to dso_preemptable function
+define void @PreemptableCall() {
+; CHECK-LABEL: define void @PreemptableCall
+entry:
+  %x = alloca i32, align 4
+  %x1 = bitcast i32* %x to i8*
+; CHECK: %x = alloca i32, align 4{{$}}
+  call void @PreemptableWrite1(i8* %x1)
+  ret void
+}
+
 ; Caller returns a dependent value.
 ; FIXME: alloca considered unsafe even if the return value is unused.
 define void @f7() {
@@ -118,7 +135,7 @@ entry:
 }
 
 ; access range [2, 6)
-define void @Rec0(i8* %p) {
+define dso_local void @Rec0(i8* %p) {
 entry:
   %p1 = getelementptr i8, i8* %p, i64 2
   call void @Write4(i8* %p1)
@@ -126,7 +143,7 @@ entry:
 }
 
 ; access range [3, 7)
-define void @Rec1(i8* %p) {
+define dso_local void @Rec1(i8* %p) {
 entry:
   %p1 = getelementptr i8, i8* %p, i64 1
   call void @Rec0(i8* %p1)
@@ -134,7 +151,7 @@ entry:
 }
 
 ; access range [-2, 2)
-define void @Rec2(i8* %p) {
+define dso_local void @Rec2(i8* %p) {
 entry:
   %p1 = getelementptr i8, i8* %p, i64 -5
   call void @Rec1(i8* %p1)
@@ -236,7 +253,7 @@ entry:
 }
 
 ; Recursive function that passes %acc unchanged => access range [0, 4).
-define void @RecursiveNoOffset(i32* %p, i32 %size, i32* %acc) {
+define dso_local void @RecursiveNoOffset(i32* %p, i32 %size, i32* %acc) {
 entry:
   %cmp = icmp eq i32 %size, 0
   br i1 %cmp, label %return, label %if.end
@@ -268,7 +285,7 @@ entry:
 }
 
 ; Recursive function that advances %acc on each iteration => access range unlimited.
-define void @RecursiveWithOffset(i32 %size, i32* %acc) {
+define dso_local void @RecursiveWithOffset(i32 %size, i32* %acc) {
 entry:
   %cmp = icmp eq i32 %size, 0
   br i1 %cmp, label %return, label %if.end
