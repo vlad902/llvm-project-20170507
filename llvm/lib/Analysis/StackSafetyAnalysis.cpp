@@ -669,7 +669,7 @@ StackSafetyResults StackSafetyInfo::run(Function &F) const {
   std::unique_ptr<SSFunctionSummary> Summary =
       llvm::make_unique<SSFunctionSummary>();
   SSLA.run(*Summary);
-  Summary->dump(&F);
+  LLVM_DEBUG(Summary->dump(&F));
   return StackSafetyResults(std::move(Summary));
 }
 
