@@ -5196,6 +5196,28 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(unsigned ID) {
   std::vector<FunctionSummary::ConstVCall> PendingTypeTestAssumeConstVCalls,
       PendingTypeCheckedLoadConstVCalls;
 
+  std::vector<FunctionSummary::Alloca> PendingAllocas;
+  std::vector<FunctionSummary::LocalUse> PendingParams;
+
+  // Helper to read ConstantRanges used by both FS_ALLOCAS and FS_PARAMS
+  auto ReadRange = [&](unsigned &I, ConstantRange &Range) {
+    APInt Lower(64, BitcodeReader::decodeSignRotatedValue(Record[I++]));
+    APInt Upper(64, BitcodeReader::decodeSignRotatedValue(Record[I++]));
+    Range = ConstantRange(Lower, Upper);
+  };
+
+  // Helper to read a list of CallUseInfos used by FS_ALLOCAS and FS_PARAMS
+  auto ReadCalls = [&](unsigned &I,
+                       std::vector<FunctionSummary::CallUseInfo> &CallUses) {
+    for (unsigned Calls = Record[I++]; Calls > 0; Calls--) {
+      FunctionSummary::CallUseInfo Call;
+      Call.Callee = Record[I++];
+      ReadRange(I, Call.Range);
+      Call.ParamNo = Record[I++];
+      CallUses.push_back(Call);
+    }
+  };
+
   while (true) {
     BitstreamEntry Entry = Stream.advanceSkippingSubblocks();
 
@@ -5287,12 +5309,16 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(unsigned ID) {
           std::move(PendingTypeTestAssumeVCalls),
           std::move(PendingTypeCheckedLoadVCalls),
           std::move(PendingTypeTestAssumeConstVCalls),
-          std::move(PendingTypeCheckedLoadConstVCalls));
+          std::move(PendingTypeCheckedLoadConstVCalls),
+          std::move(PendingAllocas),
+          std::move(PendingParams));
       PendingTypeTests.clear();
       PendingTypeTestAssumeVCalls.clear();
       PendingTypeCheckedLoadVCalls.clear();
       PendingTypeTestAssumeConstVCalls.clear();
       PendingTypeCheckedLoadConstVCalls.clear();
+      PendingAllocas.clear();
+      PendingParams.clear();
       auto VIAndOriginalGUID = getValueInfoFromValueId(ValueID);
       FS->setModulePath(getThisModule()->first());
       FS->setOriginalName(VIAndOriginalGUID.second);
@@ -5380,12 +5406,16 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(unsigned ID) {
           std::move(PendingTypeTestAssumeVCalls),
           std::move(PendingTypeCheckedLoadVCalls),
           std::move(PendingTypeTestAssumeConstVCalls),
-          std::move(PendingTypeCheckedLoadConstVCalls));
+          std::move(PendingTypeCheckedLoadConstVCalls),
+          std::move(PendingAllocas),
+          std::move(PendingParams));
       PendingTypeTests.clear();
       PendingTypeTestAssumeVCalls.clear();
       PendingTypeCheckedLoadVCalls.clear();
       PendingTypeTestAssumeConstVCalls.clear();
       PendingTypeCheckedLoadConstVCalls.clear();
+      PendingAllocas.clear();
+      PendingParams.clear();
       LastSeenSummary = FS.get();
       LastSeenGUID = VI.getGUID();
       FS->setModulePath(ModuleIdMap[ModuleId]);
@@ -5492,6 +5522,34 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(unsigned ID) {
     case bitc::FS_TYPE_ID:
       parseTypeIdSummaryRecord(Record, Strtab, TheIndex);
       break;
+
+    case bitc::FS_ALLOCAS: {
+      assert(PendingAllocas.empty());
+      unsigned I = 0;
+      while (I < Record.size()) {
+        FunctionSummary::Alloca Alloca;
+        ReadRange(I, Alloca.Range);
+        ReadCalls(I, Alloca.CallUses);
+        Alloca.Size = Record[I++];
+        PendingAllocas.push_back(std::move(Alloca));
+      }
+      assert(I == Record.size());
+      break;
+    }
+
+    case bitc::FS_PARAMS: {
+      assert(PendingParams.empty());
+      unsigned I = 0;
+      while (I < Record.size()) {
+        FunctionSummary::LocalUse Param;
+        ReadRange(I, Param.Range);
+        ReadCalls(I, Param.CallUses);
+        PendingParams.push_back(std::move(Param));
+      }
+      assert(I == Record.size());
+      break;
+    }
+
     }
   }
   llvm_unreachable("Exit infinite loop");

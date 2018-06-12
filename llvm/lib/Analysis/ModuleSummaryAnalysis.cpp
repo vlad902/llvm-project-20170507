@@ -355,12 +355,17 @@ computeFunctionSummary(ModuleSummaryIndex &Index, const Module &M,
       F.hasFnAttribute(Attribute::NoRecurse),
       F.returnDoesNotAlias(),
   };
+  std::vector<FunctionSummary::Alloca> Allocas;
+  std::vector<FunctionSummary::LocalUse> Params;
+  // TODO: Only run this when SSA results are required.
+  SSI->run(F).generateFunctionSummaryInfo(Allocas, Params);
   auto FuncSummary = llvm::make_unique<FunctionSummary>(
       Flags, NumInsts, FunFlags, RefEdges.takeVector(),
       CallGraphEdges.takeVector(), TypeTests.takeVector(),
       TypeTestAssumeVCalls.takeVector(), TypeCheckedLoadVCalls.takeVector(),
       TypeTestAssumeConstVCalls.takeVector(),
-      TypeCheckedLoadConstVCalls.takeVector());
+      TypeCheckedLoadConstVCalls.takeVector(),
+      Allocas, Params);
   if (NonRenamableLocal)
     CantBePromoted.insert(F.getGUID());
   Index.addGlobalValueSummary(F, std::move(FuncSummary));
@@ -473,7 +478,9 @@ ModuleSummaryIndex llvm::buildModuleSummaryIndex(
                     ArrayRef<FunctionSummary::VFuncId>{},
                     ArrayRef<FunctionSummary::VFuncId>{},
                     ArrayRef<FunctionSummary::ConstVCall>{},
-                    ArrayRef<FunctionSummary::ConstVCall>{});
+                    ArrayRef<FunctionSummary::ConstVCall>{},
+                    ArrayRef<FunctionSummary::Alloca>{},
+                    ArrayRef<FunctionSummary::LocalUse>{});
             Index.addGlobalValueSummary(*GV, std::move(Summary));
           } else {
             std::unique_ptr<GlobalVarSummary> Summary =

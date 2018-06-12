@@ -195,6 +195,38 @@ StackSafetyResults::StackSafetyResults(
     : Summary(std::move(Summary)) {}
 StackSafetyResults::~StackSafetyResults() {}
 
+// Converts a SSFunctionSummary to the relevant FunctionSummary constructor
+// fields
+void StackSafetyResults::generateFunctionSummaryInfo(
+    std::vector<FunctionSummary::Alloca> &Allocas,
+    std::vector<FunctionSummary::LocalUse> &Params) {
+  for (auto &AS : Summary->Allocas) {
+    FunctionSummary::Alloca Alloca;
+    Alloca.Range = AS.Summary.Range;
+    Alloca.Size = AS.Size;
+    for (auto &Call : AS.Summary.Calls) {
+      FunctionSummary::CallUseInfo CallUse;
+      CallUse.Callee = Call.Callee;
+      CallUse.ParamNo = Call.ParamNo;
+      CallUse.Range = Call.Range;
+      Alloca.CallUses.push_back(std::move(CallUse));
+    }
+    Allocas.push_back(std::move(Alloca));
+  }
+  for (auto &PS : Summary->Params) {
+    FunctionSummary::LocalUse Param;
+    Param.Range = PS.Summary.Range;
+    for (auto &Call : PS.Summary.Calls) {
+      FunctionSummary::CallUseInfo CallUse;
+      CallUse.Callee = Call.Callee;
+      CallUse.ParamNo = Call.ParamNo;
+      CallUse.Range = Call.Range;
+      Param.CallUses.push_back(std::move(CallUse));
+    }
+    Params.push_back(std::move(Param));
+  }
+}
+
 } // end namespace llvm
 
 namespace {
@@ -727,8 +759,9 @@ bool StackSafetyDataFlowAnalysis::addMetadata(Function &F,
 
 namespace llvm {
 
-StackSafetyResults StackSafetyInfo::run(Function &F) const {
-  StackSafetyLocalAnalysis SSLA(F, F.getParent()->getDataLayout(),
+StackSafetyResults StackSafetyInfo::run(const Function &F) const {
+  StackSafetyLocalAnalysis SSLA(const_cast<Function&>(F),
+                                F.getParent()->getDataLayout(),
                                 *GetSECallback(F));
   std::unique_ptr<SSFunctionSummary> Summary =
       llvm::make_unique<SSFunctionSummary>();

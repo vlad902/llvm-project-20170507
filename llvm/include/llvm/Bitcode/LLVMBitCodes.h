@@ -268,6 +268,12 @@ enum GlobalValueSummarySymtabCodes {
   //           n x (typeid, kind, name, numrba,
   //                numrba x (numarg, numarg x arg, kind, info, byte, bit))]
   FS_TYPE_ID = 21,
+  // Range information for accessed offsets for every stack local.
+  // [n x (range, numcalls, numcalls x (callee_guid, range, paramno), size)]
+  FS_ALLOCAS = 22,
+  // Range information for accessed offsets for every parameter.
+  // [n x (range, numcalls, numcalls x (callee_guid, range, paramno))]
+  FS_PARAMS = 23,
 };
 
 enum MetadataCodes {

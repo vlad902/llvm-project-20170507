@@ -3399,6 +3399,42 @@ static void writeFunctionTypeMetadataRecords(
                      FS->type_test_assume_const_vcalls());
   WriteConstVCallVec(bitc::FS_TYPE_CHECKED_LOAD_CONST_VCALL,
                      FS->type_checked_load_const_vcalls());
+
+  auto WriteRange = [&](const ConstantRange &Range) {
+    assert(Range.getBitWidth() == 64);
+    assert(Range.getLower().getNumWords() == 1);
+    assert(Range.getUpper().getNumWords() == 1);
+    emitSignedInt64(Record, *Range.getLower().getRawData());
+    emitSignedInt64(Record, *Range.getUpper().getRawData());
+  };
+
+  auto WriteCalls = [&](const std::vector<FunctionSummary::CallUseInfo> &CallUses) {
+    Record.push_back(CallUses.size());
+    for (auto &Call : CallUses) {
+      Record.push_back(Call.Callee);
+      WriteRange(Call.Range);
+      Record.push_back(Call.ParamNo);
+    }
+  };
+
+  if (!FS->allocas().empty()) {
+    Record.clear();
+    for (auto &Alloca : FS->allocas()) {
+      WriteRange(Alloca.Range);
+      WriteCalls(Alloca.CallUses);
+      Record.push_back(Alloca.Size);
+    }
+    Stream.EmitRecord(bitc::FS_ALLOCAS, Record);
+  }
+
+  if (!FS->params().empty()) {
+    Record.clear();
+    for (auto &Param : FS->params()) {
+      WriteRange(Param.Range);
+      WriteCalls(Param.CallUses);
+    }
+    Stream.EmitRecord(bitc::FS_PARAMS, Record);
+  }
 }
 
 static void writeWholeProgramDevirtResolutionByArg(

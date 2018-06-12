@@ -23,6 +23,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/IR/ConstantRange.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Allocator.h"
@@ -485,6 +486,31 @@ public:
     unsigned ReturnDoesNotAlias : 1;
   };
 
+  /// Describes the use of a value in a call instruction, specifying the call's
+  /// target, the value's parameter number, and the possible range of offsets
+  /// from the beginning of the value that are passed.
+  struct CallUseInfo {
+    CallUseInfo() : Range(ConstantRange(64, false)) {}
+
+    GlobalValue::GUID Callee;
+    ConstantRange Range;
+    unsigned ParamNo;
+  };
+
+  /// Describes the uses of a parameter or alloca by the range of offsets
+  /// accessed in the function and all of the call targets it is passed to.
+  struct LocalUse {
+    LocalUse() : Range(ConstantRange(64, false)) {}
+
+    ConstantRange Range;
+    std::vector<CallUseInfo> CallUses;
+  };
+
+  /// Describes allocas by size and their uses (inherited from LocalUse)
+  struct Alloca : public LocalUse {
+    uint64_t Size;
+  };
+
   /// Create an empty FunctionSummary (with specified call edges).
   /// Used to represent external nodes and the dummy root node.
   static FunctionSummary
@@ -498,7 +524,9 @@ public:
         std::vector<FunctionSummary::VFuncId>(),
         std::vector<FunctionSummary::VFuncId>(),
         std::vector<FunctionSummary::ConstVCall>(),
-        std::vector<FunctionSummary::ConstVCall>());
+        std::vector<FunctionSummary::ConstVCall>(),
+        std::vector<Alloca>(),
+        std::vector<LocalUse>());
   }
 
   /// A dummy node to reference external functions that aren't in the index
@@ -518,6 +546,12 @@ private:
 
   std::unique_ptr<TypeIdInfo> TIdInfo;
 
+  /// Uses for every alloca in the function.
+  std::vector<Alloca> Allocas;
+
+  /// Uses for every parameter to this function.
+  std::vector<LocalUse> Params;
+
 public:
   FunctionSummary(GVFlags Flags, unsigned NumInsts, FFlags FunFlags,
                   std::vector<ValueInfo> Refs, std::vector<EdgeTy> CGEdges,
@@ -525,10 +559,13 @@ public:
                   std::vector<VFuncId> TypeTestAssumeVCalls,
                   std::vector<VFuncId> TypeCheckedLoadVCalls,
                   std::vector<ConstVCall> TypeTestAssumeConstVCalls,
-                  std::vector<ConstVCall> TypeCheckedLoadConstVCalls)
+                  std::vector<ConstVCall> TypeCheckedLoadConstVCalls,
+                  std::vector<Alloca> Allocas, std::vector<LocalUse> Params)
       : GlobalValueSummary(FunctionKind, Flags, std::move(Refs)),
         InstCount(NumInsts), FunFlags(FunFlags),
-        CallGraphEdgeList(std::move(CGEdges)) {
+        CallGraphEdgeList(std::move(CGEdges)),
+        Allocas(std::move(Allocas)),
+        Params(std::move(Params)) {
     if (!TypeTests.empty() || !TypeTestAssumeVCalls.empty() ||
         !TypeCheckedLoadVCalls.empty() || !TypeTestAssumeConstVCalls.empty() ||
         !TypeCheckedLoadConstVCalls.empty())
@@ -595,6 +632,16 @@ public:
     if (TIdInfo)
       return TIdInfo->TypeCheckedLoadConstVCalls;
     return {};
+  }
+
+  /// Returns the uses for every alloca in this function.
+  ArrayRef<Alloca> allocas() const {
+    return Allocas;
+  }
+
+  /// Returns the uses for every parameter in this function.
+  ArrayRef<LocalUse> params() const {
+    return Params;
   }
 
   /// Add a type test to the summary. This is used by WholeProgramDevirt if we
