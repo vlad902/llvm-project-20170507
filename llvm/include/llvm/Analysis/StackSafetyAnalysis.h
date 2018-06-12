@@ -15,6 +15,7 @@
 #define LLVM_ANALYSIS_STACKSAFETYANALYSIS_H
 
 #include "llvm/ADT/Optional.h"
+#include "llvm/IR/ModuleSummaryIndex.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Pass.h"
 
@@ -35,6 +36,12 @@ public:
   StackSafetyResults(StackSafetyResults &&) = default;
   ~StackSafetyResults();
 
+  /// Generate FunctionSummary initialization parameters from the results of the
+  /// function-local stack safety analysis.
+  void generateFunctionSummaryInfo(
+      std::vector<FunctionSummary::Alloca> &Allocas,
+      std::vector<FunctionSummary::LocalUse> &Params);
+
   std::unique_ptr<SSFunctionSummary> Summary;
 };
 
@@ -46,7 +53,7 @@ class StackSafetyInfo {
 
 public:
   StackSafetyInfo(Callback GetSECallback) : GetSECallback(GetSECallback) {}
-  StackSafetyResults run(Function &F) const;
+  StackSafetyResults run(const Function &F) const;
 };
 
 /// StackSafetyInfo wrapper for the legacy pass manager
