@@ -31,8 +31,8 @@ class StackSafetyResults {
 public:
   StackSafetyResults() = delete;
   StackSafetyResults(std::unique_ptr<SSFunctionSummary> Summary);
-  StackSafetyResults(StackSafetyResults&) = delete;
-  StackSafetyResults(StackSafetyResults&&) = default;
+  StackSafetyResults(StackSafetyResults &) = delete;
+  StackSafetyResults(StackSafetyResults &&) = default;
   ~StackSafetyResults();
 
   std::unique_ptr<SSFunctionSummary> Summary;
