@@ -425,9 +425,11 @@ bool StackSafetyLocalAnalysis::run(SSFunctionSummary &FS) {
 }
 
 class StackSafetyDataFlowAnalysis {
-  StringMap<SSFunctionSummary> Functions;
-
 public:
+  bool run(Module &M, StackSafetyInfo *SSI);
+  bool addAllMetadata(Module &M);
+
+private:
   ConstantRange getArgumentAccessRange(StringRef Name, unsigned ParamNo, bool Local);
   void printCallWithOffset(StringRef Callee, unsigned ParamNo,
                            ConstantRange Offset, StringRef Indent);
@@ -440,8 +442,8 @@ public:
   bool updateOneValue(SSUseSummary &US, bool UpdateToFullSet);
   bool runOneIteration(int IterNo, bool UpdateToFullSet);
   bool runDataFlow();
-  bool run(Module &M, StackSafetyInfo *SSI);
-  bool addAllMetadata(Module &M);
+
+  StringMap<SSFunctionSummary> Functions;
 };
 
   ConstantRange StackSafetyDataFlowAnalysis::getArgumentAccessRange(StringRef Name, unsigned ParamNo, bool Local = false) {
