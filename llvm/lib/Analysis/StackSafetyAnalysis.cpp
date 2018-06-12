@@ -70,7 +70,7 @@ using namespace llvm;
 #define DEBUG_TYPE "stack-safety"
 
 static cl::opt<int> StackSafetyMaxIterations("stack-safety-max-iterations",
-                                             cl::init(5), cl::Hidden);
+                                             cl::init(20), cl::Hidden);
 
 namespace {
 
@@ -451,11 +451,16 @@ private:
   bool describeAlloca(SSAllocaSummary &AS);
   void describeFunction(FunctionID ID, SSFunctionSummary &FS);
   bool addMetadata(Function &F, SSFunctionSummary &Summary);
-  bool updateOneValue(SSUseSummary &US, bool UpdateToFullSet);
-  bool runOneIteration(int IterNo, bool UpdateToFullSet);
-  bool runDataFlow();
+  bool updateOneUse(SSUseSummary &US, bool UpdateToFullSet);
+  void updateOneNode(FunctionID F, SSFunctionSummary &FS);
+  void runDataFlow();
+  void verifyFixedPoint();
 
   FunctionMap &Functions;
+  // Callee-to-Caller multimap.
+  DenseMap<FunctionID, SmallVector<FunctionID, 4>> Callers;
+  SmallVector<FunctionID, 64> WorkList;
+  DenseMap<FunctionID, int> UpdateCount;
 };
 
 ConstantRange StackSafetyDataFlowAnalysis::getArgumentAccessRange(
@@ -590,7 +595,7 @@ bool StackSafetyDataFlowAnalysis::addMetadata(Function &F,
   return Changed;
 }
 
-bool StackSafetyDataFlowAnalysis::updateOneValue(SSUseSummary &US,
+bool StackSafetyDataFlowAnalysis::updateOneUse(SSUseSummary &US,
                                                  bool UpdateToFullSet) {
   bool Changed = false;
   for (auto &CS : US.Calls) {
@@ -607,43 +612,65 @@ bool StackSafetyDataFlowAnalysis::updateOneValue(SSUseSummary &US,
   return Changed;
 }
 
-bool StackSafetyDataFlowAnalysis::runOneIteration(int IterNo,
-                                                  bool UpdateToFullSet) {
+void StackSafetyDataFlowAnalysis::updateOneNode(FunctionID F,
+                                                SSFunctionSummary &FS) {
+  auto IT = UpdateCount.find(F);
+  bool UpdateToFullSet =
+      IT != UpdateCount.end() && IT->second > StackSafetyMaxIterations;
   bool Changed = false;
-  // FIXME: depth-first?
-  for (auto &FN : Functions) {
-    SSFunctionSummary &FP = *FN.second;
-    for (auto &AS : FP.Allocas)
-      Changed |= updateOneValue(AS.Summary, UpdateToFullSet);
-    for (auto &PS : FP.Params)
-      Changed |= updateOneValue(PS.Summary, UpdateToFullSet);
+  for (auto &AS : FS.Allocas)
+    Changed |= updateOneUse(AS.Summary, UpdateToFullSet);
+  for (auto &PS : FS.Params)
+    Changed |= updateOneUse(PS.Summary, UpdateToFullSet);
+
+  if (Changed) {
+    LLVM_DEBUG(dbgs() << "=== update [" << UpdateCount[F]
+                      << (UpdateToFullSet ? ", full-set" : "") << "] "
+                      << F->getName() << "\n");
+    // Callers of this function may need updating.
+    for (auto Caller : Callers[F])
+      WorkList.push_back(Caller);
+    UpdateCount[F]++;
   }
-  LLVM_DEBUG(dbgs() << "=== iteration " << IterNo << " "
-                    << (UpdateToFullSet ? "(full-set)" : "")
-                    << (Changed ? "(changed)" : "") << "\n");
-  LLVM_DEBUG(for (auto &FN : Functions) FN.second->dump(FN.first));
-  return Changed;
 }
 
-bool StackSafetyDataFlowAnalysis::runDataFlow() {
-  for (int IterNo = 0; IterNo < StackSafetyMaxIterations; ++IterNo)
-    if (!runOneIteration(IterNo, false))
-      return true;
+void StackSafetyDataFlowAnalysis::runDataFlow() {
+  Callers.clear();
+  WorkList.clear();
 
-  for (int IterNo = 0; IterNo < StackSafetyMaxIterations; ++IterNo)
-    if (!runOneIteration(IterNo, true))
-      return true;
+  for (auto &FN : Functions) {
+    FunctionID Caller = FN.first;
+    SSFunctionSummary &FS = *FN.second;
+    for (auto &AS : FS.Allocas)
+      for (auto &CS  : AS.Summary.Calls)
+	Callers[CS.Callee].push_back(Caller);
+    for (auto &PS : FS.Params)
+      for (auto &CS  : PS.Summary.Calls)
+	Callers[CS.Callee].push_back(Caller);
+  }
 
-  return false;
+  for (auto &FN : Functions)
+    updateOneNode(FN.first, *FN.second);
+
+  while (!WorkList.empty()) {
+    FunctionID F = WorkList.back();
+    WorkList.pop_back();
+    updateOneNode(F, *Functions[F]);
+  }
+}
+
+void StackSafetyDataFlowAnalysis::verifyFixedPoint() {
+  WorkList.clear();
+  for (auto &FN : Functions)
+    updateOneNode(FN.first, *FN.second);
+  assert(WorkList.empty());
 }
 
 bool StackSafetyDataFlowAnalysis::run() {
   LLVM_DEBUG(for (auto &FN : Functions) FN.second->dump(FN.first));
 
-  if (!runDataFlow()) {
-    LLVM_DEBUG(dbgs() << "[stack-safety] Could not reach fixed point!\n");
-    return false;
-  }
+  runDataFlow();
+  verifyFixedPoint(); // Only in Release+Asserts?
 
   LLVM_DEBUG(dbgs() << "============!!!\n");
   LLVM_DEBUG(for (auto &FN : Functions) describeFunction(FN.first, *FN.second));
