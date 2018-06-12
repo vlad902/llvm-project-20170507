@@ -425,42 +425,6 @@ class StackSafetyDataFlowAnalysis {
   StringMap<FunctionStackSummary> Functions;
 
 public:
-  // void getAnalysisUsage(AnalysisUsage &AU) const override {
-  //   AU.addRequired<TargetPassConfig>();
-  //   AU.addRequired<TargetLibraryInfoWrapperPass>();
-  //   AU.addRequired<AssumptionCacheTracker>();
-  // }
-
-  // bool analyzeFunction(Function &F, FunctionStackSummary &Summary,
-  //                      ScalarEvolution *SE) {
-  //   if (F.isDeclaration()) {
-  //     LLVM_DEBUG(dbgs() << "[StackSafety]     function definition"
-  //                     " is not available\n");
-  //     return false;
-  //   }
-
-  //   LLVM_DEBUG(dbgs() << "[StackSafety] Function: " << F.getName() << "\n");
-
-  //   auto *DL = &F.getParent()->getDataLayout();
-  //   auto &TLI = getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
-  //   auto &ACT = getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
-
-  //   // Compute DT and LI only for functions that have the attribute.
-  //   // This is only useful because the legacy pass manager doesn't let us
-  //   // compute analyzes lazily.
-  //   // In the backend pipeline, nothing preserves DT before SafeStack, so we
-  //   // would otherwise always compute it wastefully, even if there is no
-  //   // function with the safestack attribute.
-  //   DominatorTree DT(F);
-  //   LoopInfo LI(DT);
-
-  //   ScalarEvolution SE(F, TLI, ACT, DT, LI);
-
-  //   StackSafety SS(&F.getParent()->getDataLayout(), *DL, SE);
-  //   SS.run(Summary);
-  //   return true;
-  // }
-
   ConstantRange getArgumentAccessRange(StringRef Name, unsigned ParamNo, bool Local = false) {
     auto IT = Functions.find(Name);
     // Unknown callee (outside of LTO domain, dso_preemptable, or an indirect
