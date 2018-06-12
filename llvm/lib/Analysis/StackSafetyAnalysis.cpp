@@ -95,7 +95,11 @@ public:
   }
 };
 
-using FunctionID = Function *;
+static inline GlobalValue::GUID GUID(const Function *F) {
+  return GlobalValue::getGUID(GlobalValue::dropLLVMManglingEscape(F->getName()));
+}
+
+using FunctionID = GlobalValue::GUID;
 
 struct SSUseSummary {
   ConstantRange Range;
@@ -104,13 +108,21 @@ struct SSUseSummary {
   const char *Reason;
 
   struct SSCallSummary {
+    Function *F;
     FunctionID Callee;
     unsigned ParamNo;
     ConstantRange Range;
-    SSCallSummary(FunctionID Callee, unsigned ParamNo)
-        : Callee(Callee), ParamNo(ParamNo), Range(64, false) {}
+    SSCallSummary(Function *F, unsigned ParamNo)
+        : F(F), Callee(GUID(F)), ParamNo(ParamNo), Range(64, false) {}
+    SSCallSummary(Function *F, unsigned ParamNo, ConstantRange Range)
+        : F(F), Callee(GUID(F)), ParamNo(ParamNo), Range(Range) {}
     SSCallSummary(FunctionID Callee, unsigned ParamNo, ConstantRange Range)
-        : Callee(Callee), ParamNo(ParamNo), Range(Range) {}
+        : F(nullptr), Callee(Callee), ParamNo(ParamNo), Range(Range) {}
+    std::string name() {
+      if (F)
+        return "@" + F->getName().str();
+      return "#" + utostr(Callee);
+    }
   };
   SmallVector<SSCallSummary, 4> Calls;
 
@@ -119,9 +131,10 @@ struct SSUseSummary {
         Reason(nullptr) {}
   void dump() {
     dbgs() << Range;
-    for (auto &Call : Calls)
-      dbgs() << ", " << Call.Callee->getName() << "[#" << Call.ParamNo
-             << ", offset " << Call.Range << "]";
+    for (auto &Call : Calls) {
+      dbgs() << ", " << Call.name() << "[#" << Call.ParamNo << ", offset "
+             << Call.Range << "]";
+    }
     dbgs() << "\n";
   }
 };
@@ -133,8 +146,10 @@ struct SSAllocaSummary {
 
   SSAllocaSummary(AllocaInst *AI, uint64_t Size) : AI(AI), Size(Size) {}
   void dump() {
-    dbgs() << "    alloca %" << AI->getName() << " [" << Size
-           << " bytes]\n      ";
+    dbgs() << "    alloca [" << Size << " bytes]";
+    if (AI)
+      dbgs() << " %" << AI->getName();
+    dbgs() << "\n      ";
     Summary.dump();
   }
 };
@@ -155,10 +170,16 @@ namespace llvm {
 // FunctionStackSummary could also describe return value as depending on one or
 // more of its arguments.
 struct SSFunctionSummary {
+  Function *F;
   SmallVector<SSAllocaSummary, 4> Allocas;
   SmallVector<SSParamSummary, 4> Params;
+  std::string name(FunctionID ID) {
+    if (F)
+      return "@" + F->getName().str();
+    return "#" + utostr(ID);
+  }
   void dump(FunctionID ID) {
-    dbgs() << "  @" << ID->getName() << "\n";
+    dbgs() << "  " << name(ID) << "\n";
     for (unsigned i = 0; i < Params.size(); ++i)
       Params[i].dump(i);
     for (auto &AS : Allocas)
@@ -381,7 +402,7 @@ bool StackSafetyLocalAnalysis::analyzeAllUses(Value *Ptr, SSUseSummary &US) {
           if (A->get() == V) {
             ConstantRange OffsetRange = OffsetFromAlloca(UI, Ptr);
             US.Calls.push_back(SSUseSummary::SSCallSummary(
-                const_cast<FunctionID>(Callee), A - B, OffsetRange));
+                const_cast<Function*>(Callee), A - B, OffsetRange));
           }
         }
         // Don't visit function return value: if it depends on the alloca, then
@@ -407,6 +428,7 @@ bool StackSafetyLocalAnalysis::run(SSFunctionSummary &FS) {
          "Can't run StackSafety on a function declaration");
 
   LLVM_DEBUG(dbgs() << "[StackSafety] " << F.getName() << "\n");
+  FS.F = &F;
 
   for (Instruction &I : instructions(&F)) {
     if (auto AI = dyn_cast<AllocaInst>(&I)) {
@@ -452,7 +474,7 @@ private:
   void describeFunction(FunctionID ID, SSFunctionSummary &FS);
   bool addMetadata(Function &F, SSFunctionSummary &Summary);
   bool updateOneUse(SSUseSummary &US, bool UpdateToFullSet);
-  void updateOneNode(FunctionID F, SSFunctionSummary &FS);
+  void updateOneNode(FunctionID ID, SSFunctionSummary &FS);
   void runDataFlow();
   void verifyFixedPoint();
 
@@ -481,8 +503,12 @@ void StackSafetyDataFlowAnalysis::printCallWithOffset(FunctionID Callee,
                                                       unsigned ParamNo,
                                                       ConstantRange Offset,
                                                       StringRef Indent) {
-  dbgs() << Indent << "=> " << Callee->getName() << "(#" << ParamNo << ", +"
-         << Offset << ")\n";
+  if (Functions.count(Callee))
+    dbgs() << Indent << "=> " << Functions[Callee]->name(Callee);
+  else
+    dbgs() << Indent << "=> #" << Callee;
+
+  dbgs() << "(#" << ParamNo << ", +" << Offset << ")\n";
 }
 
 void StackSafetyDataFlowAnalysis::describeCallIfUnsafe(
@@ -541,8 +567,10 @@ void StackSafetyDataFlowAnalysis::describeCallIfUnsafe(
 }
 
 bool StackSafetyDataFlowAnalysis::describeAlloca(SSAllocaSummary &AS) {
-  dbgs() << "    alloca %" << AS.AI->getName() << " [" << AS.Size
-         << " bytes]\n";
+  dbgs() << "    alloca [" << AS.Size << " bytes]";
+  if (AS.AI)
+    dbgs() << " %" << AS.AI->getName();
+  dbgs() << "\n";
   ConstantRange AllocaRange{APInt(64, 0), APInt(64, AS.Size)};
   bool Safe = AllocaRange.contains(AS.Summary.Range);
   if (Safe) {
@@ -570,7 +598,7 @@ bool StackSafetyDataFlowAnalysis::describeAlloca(SSAllocaSummary &AS) {
 
 void StackSafetyDataFlowAnalysis::describeFunction(FunctionID ID,
                                                    SSFunctionSummary &FS) {
-  dbgs() << "  @" << ID->getName() << "\n";
+  dbgs() << "  " << Functions[ID]->name(ID) << "\n";
   bool Safe = true;
   for (auto &AS : FS.Allocas) {
     Safe &= describeAlloca(AS);
@@ -612,9 +640,9 @@ bool StackSafetyDataFlowAnalysis::updateOneUse(SSUseSummary &US,
   return Changed;
 }
 
-void StackSafetyDataFlowAnalysis::updateOneNode(FunctionID F,
+void StackSafetyDataFlowAnalysis::updateOneNode(FunctionID ID,
                                                 SSFunctionSummary &FS) {
-  auto IT = UpdateCount.find(F);
+  auto IT = UpdateCount.find(ID);
   bool UpdateToFullSet =
       IT != UpdateCount.end() && IT->second > StackSafetyMaxIterations;
   bool Changed = false;
@@ -624,13 +652,12 @@ void StackSafetyDataFlowAnalysis::updateOneNode(FunctionID F,
     Changed |= updateOneUse(PS.Summary, UpdateToFullSet);
 
   if (Changed) {
-    LLVM_DEBUG(dbgs() << "=== update [" << UpdateCount[F]
+    LLVM_DEBUG(dbgs() << "=== update [" << UpdateCount[ID]
                       << (UpdateToFullSet ? ", full-set" : "") << "] "
-                      << F->getName() << "\n");
+                      << Functions[ID]->name(ID) << "\n");
     // Callers of this function may need updating.
-    for (auto Caller : Callers[F])
-      WorkList.push_back(Caller);
-    UpdateCount[F]++;
+    WorkList.append(Callers[ID].begin(), Callers[ID].end());
+    UpdateCount[ID]++;
   }
 }
 
@@ -653,9 +680,9 @@ void StackSafetyDataFlowAnalysis::runDataFlow() {
     updateOneNode(FN.first, *FN.second);
 
   while (!WorkList.empty()) {
-    FunctionID F = WorkList.back();
+    FunctionID ID = WorkList.back();
     WorkList.pop_back();
-    updateOneNode(F, *Functions[F]);
+    updateOneNode(ID, *Functions[ID]);
   }
 }
 
@@ -681,7 +708,7 @@ bool StackSafetyDataFlowAnalysis::addAllMetadata(Module &M) {
   bool Changed = false;
   for (auto &F : M.functions())
     if (!F.isDeclaration())
-      Changed |= addMetadata(F, *Functions[&F]);
+      Changed |= addMetadata(F, *Functions[GUID(&F)]);
 
   return Changed;
 }
@@ -696,7 +723,7 @@ StackSafetyResults StackSafetyInfo::run(Function &F) const {
   std::unique_ptr<SSFunctionSummary> Summary =
       llvm::make_unique<SSFunctionSummary>();
   SSLA.run(*Summary);
-  LLVM_DEBUG(Summary->dump(&F));
+  LLVM_DEBUG(Summary->dump(GUID(&F)));
   return StackSafetyResults(std::move(Summary));
 }
 
@@ -749,7 +776,7 @@ bool StackSafetyGlobalAnalysis::runOnModule(Module &M) {
   StackSafetyDataFlowAnalysis::FunctionMap Functions;
   for (auto &F : M.functions())
     if (!F.isDeclaration())
-      Functions[&F] = std::move(SSI.run(F).Summary);
+      Functions[GUID(&F)] = std::move(SSI.run(F).Summary);
 
   StackSafetyDataFlowAnalysis SSDFA(Functions);
   if (!SSDFA.run())
