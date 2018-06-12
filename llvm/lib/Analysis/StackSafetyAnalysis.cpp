@@ -426,7 +426,10 @@ bool StackSafetyLocalAnalysis::run(SSFunctionSummary &FS) {
 
 class StackSafetyDataFlowAnalysis {
 public:
-  bool run(Module &M, StackSafetyInfo *SSI);
+  using FunctionMap = StringMap<SSFunctionSummary>;
+  StackSafetyDataFlowAnalysis(FunctionMap &Functions) : Functions(Functions) {}
+
+  bool run();
   bool addAllMetadata(Module &M);
 
 private:
@@ -443,7 +446,7 @@ private:
   bool runOneIteration(int IterNo, bool UpdateToFullSet);
   bool runDataFlow();
 
-  StringMap<SSFunctionSummary> Functions;
+  FunctionMap &Functions;
 };
 
   ConstantRange StackSafetyDataFlowAnalysis::getArgumentAccessRange(StringRef Name, unsigned ParamNo, bool Local = false) {
@@ -616,11 +619,7 @@ private:
     return false;
   }
 
-  bool StackSafetyDataFlowAnalysis::run(Module &M, StackSafetyInfo *SSI) {
-    for (auto &F : M.functions())
-      if (!F.isDeclaration())
-        Functions[F.getName()] = *SSI->run(F).Summary;
-
+  bool StackSafetyDataFlowAnalysis::run() {
     LLVM_DEBUG(for (auto &FN : Functions) FN.getValue().dump(FN.getKey()));
 
     if (!runDataFlow()) {
@@ -702,10 +701,16 @@ void StackSafetyGlobalAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
 }
 
 bool StackSafetyGlobalAnalysis::runOnModule(Module &M) {
-  StackSafetyDataFlowAnalysis SSDFA;
-  bool Success = SSDFA.run(M, &getAnalysis<StackSafetyInfoWrapperPass>().getSSI());
-  if (!Success)
+  StackSafetyInfo &SSI = getAnalysis<StackSafetyInfoWrapperPass>().getSSI();
+  StackSafetyDataFlowAnalysis::FunctionMap Functions;
+  for (auto &F : M.functions())
+    if (!F.isDeclaration())
+      Functions[F.getName()] = *SSI.run(F).Summary;
+
+  StackSafetyDataFlowAnalysis SSDFA(Functions);
+  if (!SSDFA.run())
     return false;
+
   return SSDFA.addAllMetadata(M);
 }
 
