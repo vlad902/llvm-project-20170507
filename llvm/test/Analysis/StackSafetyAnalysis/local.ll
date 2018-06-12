@@ -2,6 +2,10 @@
 
 @sink = global i8* null, align 8
 
+declare void @llvm.memset.p0i8.i32(i8* %dest, i8 %val, i32 %len, i1 %isvolatile)
+declare void @llvm.memcpy.p0i8.p0i8.i32(i8* %dest, i8* %src, i32 %len, i1 %isvolatile)
+declare void @llvm.memmove.p0i8.p0i8.i32(i8* %dest, i8* %src, i32 %len, i1 %isvolatile)
+
 ; Address leaked.
 define void @LeakAddress() {
 ; CHECK-LABEL: define void @LeakAddress
@@ -233,4 +237,21 @@ for.body:
 
 for.cond.cleanup:
   ret i8 %add
+}
+
+; FIXME: we don't understand that %sz in the memset call is limited to 128 by the preceding check.
+define dso_local void @SizeCheck(i32 %sz) {
+entry:
+  %x1 = alloca [128 x i8], align 16
+; CHECK: %x1 = alloca [128 x i8], align 16{{$}}
+  %x1.sub = getelementptr inbounds [128 x i8], [128 x i8]* %x1, i64 0, i64 0
+  %cmp = icmp slt i32 %sz, 129
+  br i1 %cmp, label %if.then, label %if.end
+
+if.then:
+  call void @llvm.memset.p0i8.i32(i8* nonnull align 16 %x1.sub, i8 0, i32 %sz, i1 false)
+  br label %if.end
+
+if.end:
+  ret void
 }
