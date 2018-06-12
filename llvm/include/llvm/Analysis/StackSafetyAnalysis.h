@@ -23,44 +23,50 @@ namespace llvm {
 class Function;
 class Module;
 class ScalarEvolution;
+struct SSFunctionSummary;
 
-struct FunctionStackSummary;
+/// Abstracts away the internal representation of stack safety results from
+/// analysis consumers.
+class StackSafetyResults {
+public:
+  StackSafetyResults() = delete;
+  StackSafetyResults(std::unique_ptr<SSFunctionSummary> Summary);
+  StackSafetyResults(StackSafetyResults &) = delete;
+  StackSafetyResults(StackSafetyResults &&) = default;
+  ~StackSafetyResults();
 
-// Stack analysis interface provided to other analysis consumers
+  std::unique_ptr<SSFunctionSummary> Summary;
+};
+
+/// Function-local stack safety analysis interface provided to other analysis
+/// consumers like the ModuleSummaryAnalysis.
 class StackSafetyInfo {
   using Callback = std::function<ScalarEvolution *(const Function &F)>;
   Callback GetSECallback;
 
 public:
   StackSafetyInfo(Callback GetSECallback) : GetSECallback(GetSECallback) {}
-  void run(Function &F, FunctionStackSummary &FS) const;
+  StackSafetyResults run(Function &F) const;
 };
 
-// Analysis pass for the legacy pass manager
-class StackSafetyWrapperPass : public ModulePass {
+/// StackSafetyInfo wrapper for the legacy pass manager
+class StackSafetyInfoWrapperPass : public ModulePass {
   std::unique_ptr<StackSafetyInfo> SSI;
 
 public:
   static char ID;
 
-  StackSafetyWrapperPass();
+  StackSafetyInfoWrapperPass();
 
   StackSafetyInfo &getSSI() { return *SSI; }
-  bool doInitialization(Module &M);
-  bool doFinalization(Module &M);
+  bool doInitialization(Module &M) override;
+  bool doFinalization(Module &M) override;
 
   bool runOnModule(Module &M) override;
   void getAnalysisUsage(AnalysisUsage &AU) const override;
 };
 
-//===--------------------------------------------------------------------===//
-//
-// createStackSafetyIndexWrapperPass - This pass builds a StackSafetyIndex
-// object for the module, to be written to bitcode or LLVM assembly.
-//
-ModulePass *createStackSafetyWrapperPass();
-
-// Analysis pass for the new pass manager
+/// StackSafetyInfo wrapper for the new pass manager
 class StackSafetyAnalysis : public AnalysisInfoMixin<StackSafetyAnalysis> {
   static AnalysisKey Key;
   friend AnalysisInfoMixin<StackSafetyAnalysis>;
@@ -70,6 +76,21 @@ public:
 
   Result run(Module &M, ModuleAnalysisManager &AM);
 };
+
+/// This pass performs the global stack safety analysis and annotates stack-safe
+/// allocations with !stack-safe metadata
+class StackSafetyGlobalAnalysis : public ModulePass {
+public:
+  static char ID;
+
+  StackSafetyGlobalAnalysis();
+
+  bool runOnModule(Module &M) override;
+  void getAnalysisUsage(AnalysisUsage &AU) const override;
+};
+
+ModulePass *createStackSafetyInfoWrapperPass();
+ModulePass *createStackSafetyGlobalAnalysis();
 
 } // end namespace llvm
 

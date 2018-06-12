@@ -95,50 +95,52 @@ public:
   }
 };
 
-} // end anonymous namespace
+using FunctionID = Function *;
 
-namespace llvm {
-
-struct UseSummary {
+struct SSUseSummary {
   ConstantRange Range;
   ConstantRange LocalRange;
   const Instruction *BadI;
   const char *Reason;
 
-  struct CallSummary {
-    std::string Callee;
+  struct SSCallSummary {
+    FunctionID Callee;
     unsigned ParamNo;
     ConstantRange Range;
-    CallSummary(std::string Callee, unsigned ParamNo)
+    SSCallSummary(FunctionID Callee, unsigned ParamNo)
         : Callee(Callee), ParamNo(ParamNo), Range(64, false) {}
-    CallSummary(std::string Callee, unsigned ParamNo, ConstantRange Range)
+    SSCallSummary(FunctionID Callee, unsigned ParamNo, ConstantRange Range)
         : Callee(Callee), ParamNo(ParamNo), Range(Range) {}
   };
-  SmallVector<CallSummary, 4> Calls;
+  SmallVector<SSCallSummary, 4> Calls;
 
-  UseSummary() : Range(64, false), LocalRange(64, false), BadI(nullptr), Reason(nullptr) {}
+  SSUseSummary()
+      : Range(64, false), LocalRange(64, false), BadI(nullptr),
+        Reason(nullptr) {}
   void dump() {
     dbgs() << Range;
     for (auto &Call : Calls)
-      dbgs() << ", " << Call.Callee << "[#" << Call.ParamNo << ", offset " << Call.Range << "]";
+      dbgs() << ", " << Call.Callee->getName() << "[#" << Call.ParamNo
+             << ", offset " << Call.Range << "]";
     dbgs() << "\n";
   }
 };
 
-struct AllocaSummary {
+struct SSAllocaSummary {
   AllocaInst *AI;
   uint64_t Size;
-  UseSummary Summary;
+  SSUseSummary Summary;
 
-  AllocaSummary(AllocaInst *AI, uint64_t Size) : AI(AI), Size(Size) {}
+  SSAllocaSummary(AllocaInst *AI, uint64_t Size) : AI(AI), Size(Size) {}
   void dump() {
-    dbgs() << "    alloca %" << AI->getName() << " [" << Size << " bytes]\n      ";
+    dbgs() << "    alloca %" << AI->getName() << " [" << Size
+           << " bytes]\n      ";
     Summary.dump();
   }
 };
 
-struct ParamSummary {
-  UseSummary Summary;
+struct SSParamSummary {
+  SSUseSummary Summary;
 
   void dump(unsigned ParamNo) {
     dbgs() << "    arg #" << ParamNo << "\n      ";
@@ -146,19 +148,28 @@ struct ParamSummary {
   }
 };
 
+} // end anonymous namespace
+
+namespace llvm {
+
 // FunctionStackSummary could also describe return value as depending on one or
 // more of its arguments.
-struct FunctionStackSummary {
-  SmallVector<AllocaSummary, 4> Allocas;
-  SmallVector<ParamSummary, 4> Params;
-  void dump(StringRef Name) {
-    dbgs() << "  @" << Name << "\n";
+struct SSFunctionSummary {
+  SmallVector<SSAllocaSummary, 4> Allocas;
+  SmallVector<SSParamSummary, 4> Params;
+  void dump(FunctionID ID) {
+    dbgs() << "  @" << ID->getName() << "\n";
     for (unsigned i = 0; i < Params.size(); ++i)
       Params[i].dump(i);
     for (auto &AS : Allocas)
       AS.dump();
   }
 };
+
+StackSafetyResults::StackSafetyResults(
+    std::unique_ptr<SSFunctionSummary> Summary)
+    : Summary(std::move(Summary)) {}
+StackSafetyResults::~StackSafetyResults() {}
 
 } // end namespace llvm
 
@@ -182,7 +193,7 @@ class StackSafetyLocalAnalysis {
   ConstantRange GetMemIntrinsicAccessRange(const MemIntrinsic *MI, const Use &U,
                                            const Value *AllocaPtr);
 
-  bool analyzeAllUses(Value *Ptr, UseSummary &AS);
+  bool analyzeAllUses(Value *Ptr, SSUseSummary &AS);
 
 public:
   StackSafetyLocalAnalysis(Function &F, const DataLayout &DL,
@@ -194,7 +205,7 @@ public:
 
   // Run the transformation on the associated function.
   // Returns whether the function was changed.
-  bool run(FunctionStackSummary &);
+  bool run(SSFunctionSummary &);
 };
 
 uint64_t
@@ -263,7 +274,7 @@ ConstantRange StackSafetyLocalAnalysis::GetMemIntrinsicAccessRange(
 /// Check whether a given allocation must be put on the safe
 /// stack or not. The function analyzes all uses of AI and checks whether it is
 /// only accessed in a memory safe way (as decided statically).
-bool StackSafetyLocalAnalysis::analyzeAllUses(Value *Ptr, UseSummary &US) {
+bool StackSafetyLocalAnalysis::analyzeAllUses(Value *Ptr, SSUseSummary &US) {
   // const Value *AllocaPtr = AS.AI;
   // uint64_t AllocaSize = AS.Size;
   // ConstantRange AllocaRange =
@@ -369,8 +380,8 @@ bool StackSafetyLocalAnalysis::analyzeAllUses(Value *Ptr, UseSummary &US) {
         for (ImmutableCallSite::arg_iterator A = B; A != E; ++A) {
           if (A->get() == V) {
             ConstantRange OffsetRange = OffsetFromAlloca(UI, Ptr);
-            US.Calls.push_back(
-                UseSummary::CallSummary(Callee->getName(), A - B, OffsetRange));
+            US.Calls.push_back(SSUseSummary::SSCallSummary(
+                const_cast<FunctionID>(Callee), A - B, OffsetRange));
           }
         }
         // Don't visit function return value: if it depends on the alloca, then
@@ -391,7 +402,7 @@ bool StackSafetyLocalAnalysis::analyzeAllUses(Value *Ptr, UseSummary &US) {
   return true;
 }
 
-bool StackSafetyLocalAnalysis::run(FunctionStackSummary &FS) {
+bool StackSafetyLocalAnalysis::run(SSFunctionSummary &FS) {
   assert(!F.isDeclaration() &&
          "Can't run StackSafety on a function declaration");
 
@@ -400,8 +411,8 @@ bool StackSafetyLocalAnalysis::run(FunctionStackSummary &FS) {
   for (Instruction &I : instructions(&F)) {
     if (auto AI = dyn_cast<AllocaInst>(&I)) {
       uint64_t Size = getStaticAllocaAllocationSize(AI);
-      FS.Allocas.push_back(AllocaSummary(AI, Size));
-      AllocaSummary &AS = FS.Allocas.back();
+      FS.Allocas.push_back(SSAllocaSummary(AI, Size));
+      SSAllocaSummary &AS = FS.Allocas.back();
       analyzeAllUses(AI, AS.Summary);
       AS.Summary.LocalRange = AS.Summary.Range;
     }
@@ -411,8 +422,8 @@ bool StackSafetyLocalAnalysis::run(FunctionStackSummary &FS) {
   for (Function::arg_iterator FAI = F.arg_begin(), FAE = F.arg_end();
        FAI != FAE; ++FAI, ++ArgNo) {
     Argument &A = *FAI;
-    FS.Params.push_back(ParamSummary());
-    ParamSummary &PS = FS.Params.back();
+    FS.Params.push_back(SSParamSummary());
+    SSParamSummary &PS = FS.Params.back();
     analyzeAllUses(&A, PS.Summary);
     PS.Summary.LocalRange = PS.Summary.Range;
   }
@@ -422,269 +433,258 @@ bool StackSafetyLocalAnalysis::run(FunctionStackSummary &FS) {
 }
 
 class StackSafetyDataFlowAnalysis {
-  StringMap<FunctionStackSummary> Functions;
-
 public:
-  // void getAnalysisUsage(AnalysisUsage &AU) const override {
-  //   AU.addRequired<TargetPassConfig>();
-  //   AU.addRequired<TargetLibraryInfoWrapperPass>();
-  //   AU.addRequired<AssumptionCacheTracker>();
-  // }
+  using FunctionMap = DenseMap<FunctionID, std::unique_ptr<SSFunctionSummary>>;
+  StackSafetyDataFlowAnalysis(FunctionMap &Functions) : Functions(Functions) {}
 
-  // bool analyzeFunction(Function &F, FunctionStackSummary &Summary,
-  //                      ScalarEvolution *SE) {
-  //   if (F.isDeclaration()) {
-  //     LLVM_DEBUG(dbgs() << "[StackSafety]     function definition"
-  //                     " is not available\n");
-  //     return false;
-  //   }
+  bool run();
+  bool addAllMetadata(Module &M);
 
-  //   LLVM_DEBUG(dbgs() << "[StackSafety] Function: " << F.getName() << "\n");
-
-  //   auto *DL = &F.getParent()->getDataLayout();
-  //   auto &TLI = getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
-  //   auto &ACT = getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
-
-  //   // Compute DT and LI only for functions that have the attribute.
-  //   // This is only useful because the legacy pass manager doesn't let us
-  //   // compute analyzes lazily.
-  //   // In the backend pipeline, nothing preserves DT before SafeStack, so we
-  //   // would otherwise always compute it wastefully, even if there is no
-  //   // function with the safestack attribute.
-  //   DominatorTree DT(F);
-  //   LoopInfo LI(DT);
-
-  //   ScalarEvolution SE(F, TLI, ACT, DT, LI);
-
-  //   StackSafety SS(&F.getParent()->getDataLayout(), *DL, SE);
-  //   SS.run(Summary);
-  //   return true;
-  // }
-
-  ConstantRange getArgumentAccessRange(StringRef Name, unsigned ParamNo, bool Local = false) {
-    auto IT = Functions.find(Name);
-    // Unknown callee (outside of LTO domain, dso_preemptable, or an indirect
-    // call).
-    if (IT == Functions.end())
-      return ConstantRange(64);
-    FunctionStackSummary &FS = IT->getValue();
-    if (ParamNo >= FS.Params.size()) // possibly vararg
-      return ConstantRange(64);
-    return Local ? FS.Params[ParamNo].Summary.LocalRange
-                 : FS.Params[ParamNo].Summary.Range;
-  }
-
-  void printCallWithOffset(StringRef Callee, unsigned ParamNo,
-                           ConstantRange Offset, StringRef Indent) {
-    dbgs() << Indent << "=> " << Callee << "(#" << ParamNo << ", +"
-           << Offset << ")\n";
-  }
-
+private:
+  ConstantRange getArgumentAccessRange(FunctionID ID, unsigned ParamNo,
+                                       bool Local);
+  void printCallWithOffset(FunctionID Callee, unsigned ParamNo,
+                           ConstantRange Offset, StringRef Indent);
   void describeCallIfUnsafe(ConstantRange AllocaRange, ConstantRange PtrRange,
-                            UseSummary::CallSummary &CS,
-                            std::string Indent, StringSet<> &Visited) {
-    ConstantRange ParamRange = PtrRange.add(CS.Range);
+                            SSUseSummary::SSCallSummary &CS, std::string Indent,
+                            DenseSet<FunctionID> &Visited);
+  bool describeAlloca(SSAllocaSummary &AS);
+  void describeFunction(FunctionID ID, SSFunctionSummary &FS);
+  bool addMetadata(Function &F, SSFunctionSummary &Summary);
+  bool updateOneValue(SSUseSummary &US, bool UpdateToFullSet);
+  bool runOneIteration(int IterNo, bool UpdateToFullSet);
+  bool runDataFlow();
 
-    if (Visited.count(CS.Callee)) {
-      printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
-      dbgs() << Indent << "  <recursion>\n";
-      return;
-    }
-    Visited.insert(CS.Callee);
+  FunctionMap &Functions;
+};
 
-    auto IT = Functions.find(CS.Callee);
-    // Unknown callee (outside of LTO domain, dso_preemptable, or an indirect call).
-    if (IT == Functions.end()) {
-      printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
-      dbgs() << Indent << "  external call\n";
-      return;
-    }
+ConstantRange StackSafetyDataFlowAnalysis::getArgumentAccessRange(
+    FunctionID ID, unsigned ParamNo, bool Local = false) {
+  auto IT = Functions.find(ID);
+  // Unknown callee (outside of LTO domain, dso_preemptable, or an indirect
+  // call).
+  if (IT == Functions.end())
+    return ConstantRange(64);
+  SSFunctionSummary &FS = *IT->second;
+  if (ParamNo >= FS.Params.size()) // possibly vararg
+    return ConstantRange(64);
+  return Local ? FS.Params[ParamNo].Summary.LocalRange
+               : FS.Params[ParamNo].Summary.Range;
+}
 
-    FunctionStackSummary &FS = IT->getValue();
-    if (CS.ParamNo >= FS.Params.size()) {
-      printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
-      dbgs() << Indent << "  unknown argument\n";
-      return;
-    }
+void StackSafetyDataFlowAnalysis::printCallWithOffset(FunctionID Callee,
+                                                      unsigned ParamNo,
+                                                      ConstantRange Offset,
+                                                      StringRef Indent) {
+  dbgs() << Indent << "=> " << Callee->getName() << "(#" << ParamNo << ", +"
+         << Offset << ")\n";
+}
 
-    ParamSummary &PS = FS.Params[CS.ParamNo];
-    ConstantRange CalleeRange = ParamRange.add(PS.Summary.Range);
-    bool Safe = AllocaRange.contains(CalleeRange);
-    if (Safe)
-      return;
+void StackSafetyDataFlowAnalysis::describeCallIfUnsafe(
+    ConstantRange AllocaRange, ConstantRange PtrRange,
+    SSUseSummary::SSCallSummary &CS, std::string Indent,
+    DenseSet<FunctionID> &Visited) {
+  ConstantRange ParamRange = PtrRange.add(CS.Range);
 
-    ConstantRange CalleeLocalRange = ParamRange.add(PS.Summary.LocalRange);
-    bool LocalSafe = AllocaRange.contains(CalleeLocalRange);
-    if (!LocalSafe) {
-      printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
-      if (PS.Summary.BadI) {
-        dbgs() << Indent << "  " << PS.Summary.Reason << ": "
-               << *PS.Summary.BadI << "\n";
-      } else {
-        dbgs() << Indent << "  unsafe local access (unknown)\n";
-      }
-      return;
-    }
+  if (Visited.count(CS.Callee)) {
+    printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
+    dbgs() << Indent << "  <recursion>\n";
+    return;
+  }
+  Visited.insert(CS.Callee);
 
-    for (auto &OtherCS : PS.Summary.Calls) {
-      printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
-      describeCallIfUnsafe(AllocaRange, ParamRange.add(OtherCS.Range), OtherCS,
-                           Indent + "  ", Visited);
-    }
+  auto IT = Functions.find(CS.Callee);
+  // Unknown callee (outside of LTO domain, dso_preemptable, or an indirect
+  // call).
+  if (IT == Functions.end()) {
+    printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
+    dbgs() << Indent << "  external call\n";
+    return;
   }
 
-  bool describeAlloca(AllocaSummary &AS) {
-    dbgs() << "    alloca %" << AS.AI->getName() << " [" << AS.Size << " bytes]\n";
-    ConstantRange AllocaRange{APInt(64, 0), APInt(64, AS.Size)};
-    bool Safe = AllocaRange.contains(AS.Summary.Range);
-    if (Safe) {
-      dbgs() << "      safe\n";
-      return true;
-    }
-    bool LocalSafe = AllocaRange.contains(AS.Summary.LocalRange);
-    if (!LocalSafe) {
-      if (AS.Summary.BadI) {
-        dbgs() << "      " << AS.Summary.Reason << ": " << *AS.Summary.BadI
-               << "\n";
-      } else {
-        dbgs() << "      unsafe local access (unknown)\n";
-      }
-      return false;
-    }
-
-    StringSet<> Visited;
-    for (auto &CS : AS.Summary.Calls) {
-      describeCallIfUnsafe(AllocaRange,
-                           ConstantRange(APInt(64, 0), APInt(64, 1)), CS,
-                           "      ", Visited);
-    }
-    return false;
+  SSFunctionSummary &FS = *IT->second;
+  if (CS.ParamNo >= FS.Params.size()) {
+    printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
+    dbgs() << Indent << "  unknown argument\n";
+    return;
   }
 
-  void describeFunction(StringRef Name, FunctionStackSummary &FS) {
-    dbgs() << "  @" << Name << "\n";
-    bool Safe = true;
-    for (auto &AS : FS.Allocas) {
-      Safe &= describeAlloca(AS);
+  SSParamSummary &PS = FS.Params[CS.ParamNo];
+  ConstantRange CalleeRange = ParamRange.add(PS.Summary.Range);
+  bool Safe = AllocaRange.contains(CalleeRange);
+  if (Safe)
+    return;
+
+  ConstantRange CalleeLocalRange = ParamRange.add(PS.Summary.LocalRange);
+  bool LocalSafe = AllocaRange.contains(CalleeLocalRange);
+  if (!LocalSafe) {
+    printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
+    if (PS.Summary.BadI) {
+      dbgs() << Indent << "  " << PS.Summary.Reason << ": " << *PS.Summary.BadI
+             << "\n";
+    } else {
+      dbgs() << Indent << "  unsafe local access (unknown)\n";
     }
-    if (Safe)
-      dbgs() << "    function-safe\n";
+    return;
   }
 
-  bool addMetadata(Function &F, FunctionStackSummary &Summary) {
-    bool Changed = false;
-    for (auto &AS : Summary.Allocas) {
-      ConstantRange AllocaRange{APInt(64, 0), APInt(64, AS.Size)};
-      bool Safe = AllocaRange.contains(AS.Summary.Range);
-      if (!Safe)
-        continue;
-      Changed = true;
-      Module *M = F.getParent();
-      AS.AI->setMetadata(M->getMDKindID("stack-safe"),
-                         MDNode::get(M->getContext(), None));
-    }
-    return Changed;
+  for (auto &OtherCS : PS.Summary.Calls) {
+    printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
+    describeCallIfUnsafe(AllocaRange, ParamRange.add(OtherCS.Range), OtherCS,
+                         Indent + "  ", Visited);
   }
+}
 
-  bool updateOneValue(UseSummary &US, bool UpdateToFullSet) {
-    bool Changed = false;
-    for (auto &CS : US.Calls) {
-      ConstantRange CalleeRange = getArgumentAccessRange(CS.Callee, CS.ParamNo);
-      CalleeRange = CalleeRange.add(CS.Range);
-      if (!US.Range.contains(CalleeRange)) {
-        Changed = true;
-        if (UpdateToFullSet)
-          US.Range = ConstantRange(64, true);
-        else
-          US.Range = US.Range.unionWith(CalleeRange);
-      }
-    }
-    return Changed;
-  }
-
-  bool runOneIteration(int IterNo, bool UpdateToFullSet) {
-    bool Changed = false;
-    // FIXME: depth-first?
-    for (auto &FN : Functions) {
-      FunctionStackSummary &FP = FN.getValue();
-      for (auto &AS : FP.Allocas)
-        Changed |= updateOneValue(AS.Summary, UpdateToFullSet);
-      for (auto &PS : FP.Params)
-        Changed |= updateOneValue(PS.Summary, UpdateToFullSet);
-    }
-    LLVM_DEBUG(dbgs() << "=== iteration " << IterNo << " "
-                      << (UpdateToFullSet ? "(full-set)" : "")
-                      << (Changed ? "(changed)" : "") << "\n");
-    LLVM_DEBUG(for (auto &FN : Functions) FN.getValue().dump(FN.getKey()));
-    return Changed;
-  }
-
-  bool runDataFlow() {
-    for (int IterNo = 0; IterNo < StackSafetyMaxIterations; ++IterNo)
-      if (!runOneIteration(IterNo, false))
-        return true;
-
-    for (int IterNo = 0; IterNo < StackSafetyMaxIterations; ++IterNo)
-      if (!runOneIteration(IterNo, true))
-        return true;
-
-    return false;
-  }
-
-  bool run(Module &M, StackSafetyInfo *SSI) {
-    for (auto &F : M.functions())
-      if (!F.isDeclaration())
-        SSI->run(F, Functions[F.getName()]);
-
-    LLVM_DEBUG(for (auto &FN : Functions) FN.getValue().dump(FN.getKey()));
-
-    if (!runDataFlow()) {
-      LLVM_DEBUG(dbgs() << "[stack-safety] Could not reach fixed point!\n");
-      return false;
-    }
-
-    LLVM_DEBUG(dbgs() << "============!!!\n");
-    LLVM_DEBUG(for (auto &FN : Functions) describeFunction(FN.getKey(), FN.getValue()));
+bool StackSafetyDataFlowAnalysis::describeAlloca(SSAllocaSummary &AS) {
+  dbgs() << "    alloca %" << AS.AI->getName() << " [" << AS.Size
+         << " bytes]\n";
+  ConstantRange AllocaRange{APInt(64, 0), APInt(64, AS.Size)};
+  bool Safe = AllocaRange.contains(AS.Summary.Range);
+  if (Safe) {
+    dbgs() << "      safe\n";
     return true;
   }
-
-  bool addAllMetadata(Module &M) {
-    bool Changed = false;
-    for (auto &F : M.functions())
-      if (!F.isDeclaration())
-        Changed |= addMetadata(F, Functions[F.getName()]);
-
-    return Changed;
+  bool LocalSafe = AllocaRange.contains(AS.Summary.LocalRange);
+  if (!LocalSafe) {
+    if (AS.Summary.BadI) {
+      dbgs() << "      " << AS.Summary.Reason << ": " << *AS.Summary.BadI
+             << "\n";
+    } else {
+      dbgs() << "      unsafe local access (unknown)\n";
+    }
+    return false;
   }
-};
+
+  DenseSet<FunctionID> Visited;
+  for (auto &CS : AS.Summary.Calls) {
+    describeCallIfUnsafe(AllocaRange, ConstantRange(APInt(64, 0), APInt(64, 1)),
+                         CS, "      ", Visited);
+  }
+  return false;
+}
+
+void StackSafetyDataFlowAnalysis::describeFunction(FunctionID ID,
+                                                   SSFunctionSummary &FS) {
+  dbgs() << "  @" << ID->getName() << "\n";
+  bool Safe = true;
+  for (auto &AS : FS.Allocas) {
+    Safe &= describeAlloca(AS);
+  }
+  if (Safe)
+    dbgs() << "    function-safe\n";
+}
+
+bool StackSafetyDataFlowAnalysis::addMetadata(Function &F,
+                                              SSFunctionSummary &Summary) {
+  bool Changed = false;
+  for (auto &AS : Summary.Allocas) {
+    ConstantRange AllocaRange{APInt(64, 0), APInt(64, AS.Size)};
+    bool Safe = AllocaRange.contains(AS.Summary.Range);
+    if (!Safe)
+      continue;
+    Changed = true;
+    Module *M = F.getParent();
+    AS.AI->setMetadata(M->getMDKindID("stack-safe"),
+                       MDNode::get(M->getContext(), None));
+  }
+  return Changed;
+}
+
+bool StackSafetyDataFlowAnalysis::updateOneValue(SSUseSummary &US,
+                                                 bool UpdateToFullSet) {
+  bool Changed = false;
+  for (auto &CS : US.Calls) {
+    ConstantRange CalleeRange = getArgumentAccessRange(CS.Callee, CS.ParamNo);
+    CalleeRange = CalleeRange.add(CS.Range);
+    if (!US.Range.contains(CalleeRange)) {
+      Changed = true;
+      if (UpdateToFullSet)
+        US.Range = ConstantRange(64, true);
+      else
+        US.Range = US.Range.unionWith(CalleeRange);
+    }
+  }
+  return Changed;
+}
+
+bool StackSafetyDataFlowAnalysis::runOneIteration(int IterNo,
+                                                  bool UpdateToFullSet) {
+  bool Changed = false;
+  // FIXME: depth-first?
+  for (auto &FN : Functions) {
+    SSFunctionSummary &FP = *FN.second;
+    for (auto &AS : FP.Allocas)
+      Changed |= updateOneValue(AS.Summary, UpdateToFullSet);
+    for (auto &PS : FP.Params)
+      Changed |= updateOneValue(PS.Summary, UpdateToFullSet);
+  }
+  LLVM_DEBUG(dbgs() << "=== iteration " << IterNo << " "
+                    << (UpdateToFullSet ? "(full-set)" : "")
+                    << (Changed ? "(changed)" : "") << "\n");
+  LLVM_DEBUG(for (auto &FN : Functions) FN.second->dump(FN.first));
+  return Changed;
+}
+
+bool StackSafetyDataFlowAnalysis::runDataFlow() {
+  for (int IterNo = 0; IterNo < StackSafetyMaxIterations; ++IterNo)
+    if (!runOneIteration(IterNo, false))
+      return true;
+
+  for (int IterNo = 0; IterNo < StackSafetyMaxIterations; ++IterNo)
+    if (!runOneIteration(IterNo, true))
+      return true;
+
+  return false;
+}
+
+bool StackSafetyDataFlowAnalysis::run() {
+  LLVM_DEBUG(for (auto &FN : Functions) FN.second->dump(FN.first));
+
+  if (!runDataFlow()) {
+    LLVM_DEBUG(dbgs() << "[stack-safety] Could not reach fixed point!\n");
+    return false;
+  }
+
+  LLVM_DEBUG(dbgs() << "============!!!\n");
+  LLVM_DEBUG(for (auto &FN : Functions) describeFunction(FN.first, *FN.second));
+  return true;
+}
+
+bool StackSafetyDataFlowAnalysis::addAllMetadata(Module &M) {
+  bool Changed = false;
+  for (auto &F : M.functions())
+    if (!F.isDeclaration())
+      Changed |= addMetadata(F, *Functions[&F]);
+
+  return Changed;
+}
 
 } // end anonymous namespace
 
 namespace llvm {
 
-void StackSafetyInfo::run(Function &F, FunctionStackSummary &FS) const {
+StackSafetyResults StackSafetyInfo::run(Function &F) const {
   StackSafetyLocalAnalysis SSLA(F, F.getParent()->getDataLayout(),
                                 *GetSECallback(F));
-  SSLA.run(FS);
+  std::unique_ptr<SSFunctionSummary> Summary =
+      llvm::make_unique<SSFunctionSummary>();
+  SSLA.run(*Summary);
+  Summary->dump(&F);
+  return StackSafetyResults(std::move(Summary));
 }
 
-StackSafetyWrapperPass::StackSafetyWrapperPass() : ModulePass(ID) {
-  initializeStackSafetyWrapperPassPass(*PassRegistry::getPassRegistry());
+StackSafetyInfoWrapperPass::StackSafetyInfoWrapperPass() : ModulePass(ID) {
+  initializeStackSafetyInfoWrapperPassPass(*PassRegistry::getPassRegistry());
 }
 
-void StackSafetyWrapperPass::getAnalysisUsage(AnalysisUsage &AU) const {
+void StackSafetyInfoWrapperPass::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addRequired<ScalarEvolutionWrapperPass>();
+  AU.setPreservesAll();
 }
 
-bool StackSafetyWrapperPass::runOnModule(Module &M) {
-  StackSafetyDataFlowAnalysis SSDFA;
-  bool Success = SSDFA.run(M, &getSSI());
-  if (!Success)
-    return false;
-  return SSDFA.addAllMetadata(M);
-}
+bool StackSafetyInfoWrapperPass::runOnModule(Module &M) { return false; }
 
-bool StackSafetyWrapperPass::doInitialization(Module &M) {
+bool StackSafetyInfoWrapperPass::doInitialization(Module &M) {
   SSI.reset(new StackSafetyInfo([this](const Function &F) {
     return &this->getAnalysis<ScalarEvolutionWrapperPass>(
                     *const_cast<Function *>(&F))
@@ -693,12 +693,12 @@ bool StackSafetyWrapperPass::doInitialization(Module &M) {
   return false;
 }
 
-bool StackSafetyWrapperPass::doFinalization(Module &M) {
+bool StackSafetyInfoWrapperPass::doFinalization(Module &M) {
   SSI.reset();
   return false;
 }
 
-char StackSafetyWrapperPass::ID = 0;
+char StackSafetyInfoWrapperPass::ID = 0;
 
 AnalysisKey StackSafetyAnalysis::Key;
 
@@ -709,11 +709,47 @@ StackSafetyInfo StackSafetyAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
   });
 }
 
+StackSafetyGlobalAnalysis::StackSafetyGlobalAnalysis() : ModulePass(ID) {
+  initializeStackSafetyGlobalAnalysisPass(*PassRegistry::getPassRegistry());
+}
+
+void StackSafetyGlobalAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
+  AU.addRequired<StackSafetyInfoWrapperPass>();
+}
+
+bool StackSafetyGlobalAnalysis::runOnModule(Module &M) {
+  StackSafetyInfo &SSI = getAnalysis<StackSafetyInfoWrapperPass>().getSSI();
+  StackSafetyDataFlowAnalysis::FunctionMap Functions;
+  for (auto &F : M.functions())
+    if (!F.isDeclaration())
+      Functions[&F] = std::move(SSI.run(F).Summary);
+
+  StackSafetyDataFlowAnalysis SSDFA(Functions);
+  if (!SSDFA.run())
+    return false;
+
+  return SSDFA.addAllMetadata(M);
+}
+
+char StackSafetyGlobalAnalysis::ID = 0;
+
 } // namespace llvm
 
-INITIALIZE_PASS_BEGIN(StackSafetyWrapperPass, DEBUG_TYPE,
-                      "Stack safety analysis pass", false, false)
-INITIALIZE_PASS_END(StackSafetyWrapperPass, DEBUG_TYPE,
-                    "Stack safety analysis pass", false, false)
+INITIALIZE_PASS_BEGIN(StackSafetyInfoWrapperPass, "stack-safety-local",
+                      "Stack safety local analysis pass", false, true)
+INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass)
+INITIALIZE_PASS_END(StackSafetyInfoWrapperPass, "stack-safety-local",
+                    "Stack safety local analysis pass", false, true)
 
-ModulePass *llvm::createStackSafetyWrapperPass() { return new StackSafetyWrapperPass(); }
+INITIALIZE_PASS_BEGIN(StackSafetyGlobalAnalysis, "stack-safety",
+                      "Stack safety global analysis pass", false, false)
+INITIALIZE_PASS_DEPENDENCY(StackSafetyInfoWrapperPass)
+INITIALIZE_PASS_END(StackSafetyGlobalAnalysis, "stack-safety",
+                    "Stack safety global analysis pass", false, false)
+
+ModulePass *llvm::createStackSafetyInfoWrapperPass() {
+  return new StackSafetyInfoWrapperPass();
+}
+ModulePass *llvm::createStackSafetyGlobalAnalysis() {
+  return new StackSafetyGlobalAnalysis();
+}
