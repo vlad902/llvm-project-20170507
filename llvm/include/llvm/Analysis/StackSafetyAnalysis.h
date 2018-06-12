@@ -23,19 +23,19 @@ namespace llvm {
 class Function;
 class Module;
 class ScalarEvolution;
-struct FunctionStackSummary;
+struct SSFunctionSummary;
 
 /// Abstracts away the internal representation of stack safety results from
 /// analysis consumers.
 class StackSafetyResults {
 public:
   StackSafetyResults() = delete;
-  StackSafetyResults(std::unique_ptr<FunctionStackSummary> Summary);
+  StackSafetyResults(std::unique_ptr<SSFunctionSummary> Summary);
   StackSafetyResults(StackSafetyResults&) = delete;
   StackSafetyResults(StackSafetyResults&&) = default;
   ~StackSafetyResults();
 
-  std::unique_ptr<FunctionStackSummary> Summary;
+  std::unique_ptr<SSFunctionSummary> Summary;
 };
 
 /// Function-local stack safety analysis interface provided to other analysis
