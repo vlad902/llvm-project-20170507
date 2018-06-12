@@ -632,23 +632,20 @@ void StackSafetyInfo::run(Function &F, FunctionStackSummary &FS) const {
   SSLA.run(FS);
 }
 
-StackSafetyWrapperPass::StackSafetyWrapperPass() : ModulePass(ID) {
-  initializeStackSafetyWrapperPassPass(*PassRegistry::getPassRegistry());
+StackSafetyInfoWrapperPass::StackSafetyInfoWrapperPass() : ModulePass(ID) {
+  initializeStackSafetyInfoWrapperPassPass(*PassRegistry::getPassRegistry());
 }
 
-void StackSafetyWrapperPass::getAnalysisUsage(AnalysisUsage &AU) const {
+void StackSafetyInfoWrapperPass::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addRequired<ScalarEvolutionWrapperPass>();
+  AU.setPreservesAll();
 }
 
-bool StackSafetyWrapperPass::runOnModule(Module &M) {
-  StackSafetyDataFlowAnalysis SSDFA;
-  bool Success = SSDFA.run(M, &getSSI());
-  if (!Success)
-    return false;
-  return SSDFA.addAllMetadata(M);
+bool StackSafetyInfoWrapperPass::runOnModule(Module &M) {
+  return false;
 }
 
-bool StackSafetyWrapperPass::doInitialization(Module &M) {
+bool StackSafetyInfoWrapperPass::doInitialization(Module &M) {
   SSI.reset(new StackSafetyInfo([this](const Function &F) {
     return &this->getAnalysis<ScalarEvolutionWrapperPass>(
                     *const_cast<Function *>(&F))
@@ -657,12 +654,12 @@ bool StackSafetyWrapperPass::doInitialization(Module &M) {
   return false;
 }
 
-bool StackSafetyWrapperPass::doFinalization(Module &M) {
+bool StackSafetyInfoWrapperPass::doFinalization(Module &M) {
   SSI.reset();
   return false;
 }
 
-char StackSafetyWrapperPass::ID = 0;
+char StackSafetyInfoWrapperPass::ID = 0;
 
 AnalysisKey StackSafetyAnalysis::Key;
 
@@ -673,11 +670,37 @@ StackSafetyInfo StackSafetyAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
   });
 }
 
+StackSafetyGlobalAnalysis::StackSafetyGlobalAnalysis() : ModulePass(ID) {
+  initializeStackSafetyGlobalAnalysisPass(*PassRegistry::getPassRegistry());
+}
+
+void StackSafetyGlobalAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
+  AU.addRequired<StackSafetyInfoWrapperPass>();
+}
+
+bool StackSafetyGlobalAnalysis::runOnModule(Module &M) {
+  StackSafetyDataFlowAnalysis SSDFA;
+  bool Success = SSDFA.run(M, &getAnalysis<StackSafetyInfoWrapperPass>().getSSI());
+  if (!Success)
+    return false;
+  return SSDFA.addAllMetadata(M);
+}
+
+char StackSafetyGlobalAnalysis::ID = 0;
+
 } // namespace llvm
 
-INITIALIZE_PASS_BEGIN(StackSafetyWrapperPass, DEBUG_TYPE,
-                      "Stack safety analysis pass", false, false)
-INITIALIZE_PASS_END(StackSafetyWrapperPass, DEBUG_TYPE,
-                    "Stack safety analysis pass", false, false)
+INITIALIZE_PASS_BEGIN(StackSafetyInfoWrapperPass, "stack-safety-local",
+                      "Stack safety local analysis pass", false, true)
+INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass)
+INITIALIZE_PASS_END(StackSafetyInfoWrapperPass, "stack-safety-local",
+                    "Stack safety local analysis pass", false, true)
 
-ModulePass *llvm::createStackSafetyWrapperPass() { return new StackSafetyWrapperPass(); }
+INITIALIZE_PASS_BEGIN(StackSafetyGlobalAnalysis, "stack-safety",
+                      "Stack safety global analysis pass", false, false)
+INITIALIZE_PASS_DEPENDENCY(StackSafetyInfoWrapperPass)
+INITIALIZE_PASS_END(StackSafetyGlobalAnalysis, "stack-safety",
+                    "Stack safety global analysis pass", false, false)
+
+ModulePass *llvm::createStackSafetyInfoWrapperPass() { return new StackSafetyInfoWrapperPass(); }
+ModulePass *llvm::createStackSafetyGlobalAnalysis() { return new StackSafetyGlobalAnalysis(); }
