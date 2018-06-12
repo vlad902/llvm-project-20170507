@@ -428,7 +428,23 @@ class StackSafetyDataFlowAnalysis {
   StringMap<SSFunctionSummary> Functions;
 
 public:
-  ConstantRange getArgumentAccessRange(StringRef Name, unsigned ParamNo, bool Local = false) {
+  ConstantRange getArgumentAccessRange(StringRef Name, unsigned ParamNo, bool Local);
+  void printCallWithOffset(StringRef Callee, unsigned ParamNo,
+                           ConstantRange Offset, StringRef Indent);
+  void describeCallIfUnsafe(ConstantRange AllocaRange, ConstantRange PtrRange,
+                            SSUseSummary::SSCallSummary &CS,
+                            std::string Indent, StringSet<> &Visited);
+  bool describeAlloca(SSAllocaSummary &AS);
+  void describeFunction(StringRef Name, SSFunctionSummary &FS);
+  bool addMetadata(Function &F, SSFunctionSummary &Summary);
+  bool updateOneValue(SSUseSummary &US, bool UpdateToFullSet);
+  bool runOneIteration(int IterNo, bool UpdateToFullSet);
+  bool runDataFlow();
+  bool run(Module &M, StackSafetyInfo *SSI);
+  bool addAllMetadata(Module &M);
+};
+
+  ConstantRange StackSafetyDataFlowAnalysis::getArgumentAccessRange(StringRef Name, unsigned ParamNo, bool Local = false) {
     auto IT = Functions.find(Name);
     // Unknown callee (outside of LTO domain, dso_preemptable, or an indirect
     // call).
@@ -441,13 +457,13 @@ public:
                  : FS.Params[ParamNo].Summary.Range;
   }
 
-  void printCallWithOffset(StringRef Callee, unsigned ParamNo,
+  void StackSafetyDataFlowAnalysis::printCallWithOffset(StringRef Callee, unsigned ParamNo,
                            ConstantRange Offset, StringRef Indent) {
     dbgs() << Indent << "=> " << Callee << "(#" << ParamNo << ", +"
            << Offset << ")\n";
   }
 
-  void describeCallIfUnsafe(ConstantRange AllocaRange, ConstantRange PtrRange,
+  void StackSafetyDataFlowAnalysis::describeCallIfUnsafe(ConstantRange AllocaRange, ConstantRange PtrRange,
                             SSUseSummary::SSCallSummary &CS,
                             std::string Indent, StringSet<> &Visited) {
     ConstantRange ParamRange = PtrRange.add(CS.Range);
@@ -500,7 +516,7 @@ public:
     }
   }
 
-  bool describeAlloca(SSAllocaSummary &AS) {
+  bool StackSafetyDataFlowAnalysis::describeAlloca(SSAllocaSummary &AS) {
     dbgs() << "    alloca %" << AS.AI->getName() << " [" << AS.Size << " bytes]\n";
     ConstantRange AllocaRange{APInt(64, 0), APInt(64, AS.Size)};
     bool Safe = AllocaRange.contains(AS.Summary.Range);
@@ -528,7 +544,7 @@ public:
     return false;
   }
 
-  void describeFunction(StringRef Name, SSFunctionSummary &FS) {
+  void StackSafetyDataFlowAnalysis::describeFunction(StringRef Name, SSFunctionSummary &FS) {
     dbgs() << "  @" << Name << "\n";
     bool Safe = true;
     for (auto &AS : FS.Allocas) {
@@ -538,7 +554,7 @@ public:
       dbgs() << "    function-safe\n";
   }
 
-  bool addMetadata(Function &F, SSFunctionSummary &Summary) {
+  bool StackSafetyDataFlowAnalysis::addMetadata(Function &F, SSFunctionSummary &Summary) {
     bool Changed = false;
     for (auto &AS : Summary.Allocas) {
       ConstantRange AllocaRange{APInt(64, 0), APInt(64, AS.Size)};
@@ -553,7 +569,7 @@ public:
     return Changed;
   }
 
-  bool updateOneValue(SSUseSummary &US, bool UpdateToFullSet) {
+  bool StackSafetyDataFlowAnalysis::updateOneValue(SSUseSummary &US, bool UpdateToFullSet) {
     bool Changed = false;
     for (auto &CS : US.Calls) {
       ConstantRange CalleeRange = getArgumentAccessRange(CS.Callee, CS.ParamNo);
@@ -569,7 +585,7 @@ public:
     return Changed;
   }
 
-  bool runOneIteration(int IterNo, bool UpdateToFullSet) {
+  bool StackSafetyDataFlowAnalysis::runOneIteration(int IterNo, bool UpdateToFullSet) {
     bool Changed = false;
     // FIXME: depth-first?
     for (auto &FN : Functions) {
@@ -586,7 +602,7 @@ public:
     return Changed;
   }
 
-  bool runDataFlow() {
+  bool StackSafetyDataFlowAnalysis::runDataFlow() {
     for (int IterNo = 0; IterNo < StackSafetyMaxIterations; ++IterNo)
       if (!runOneIteration(IterNo, false))
         return true;
@@ -598,7 +614,7 @@ public:
     return false;
   }
 
-  bool run(Module &M, StackSafetyInfo *SSI) {
+  bool StackSafetyDataFlowAnalysis::run(Module &M, StackSafetyInfo *SSI) {
     for (auto &F : M.functions())
       if (!F.isDeclaration())
         Functions[F.getName()] = *SSI->run(F).Summary;
@@ -615,7 +631,7 @@ public:
     return true;
   }
 
-  bool addAllMetadata(Module &M) {
+  bool StackSafetyDataFlowAnalysis::addAllMetadata(Module &M) {
     bool Changed = false;
     for (auto &F : M.functions())
       if (!F.isDeclaration())
@@ -623,7 +639,6 @@ public:
 
     return Changed;
   }
-};
 
 } // end anonymous namespace
 
