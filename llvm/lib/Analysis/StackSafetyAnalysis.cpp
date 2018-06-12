@@ -160,6 +160,9 @@ struct FunctionStackSummary {
   }
 };
 
+StackSafetyResults::StackSafetyResults(std::unique_ptr<FunctionStackSummary> Summary) : Summary(std::move(Summary)) {}
+StackSafetyResults::~StackSafetyResults() {}
+
 } // end namespace llvm
 
 namespace {
@@ -598,7 +601,7 @@ public:
   bool run(Module &M, StackSafetyInfo *SSI) {
     for (auto &F : M.functions())
       if (!F.isDeclaration())
-        SSI->run(F, Functions[F.getName()]);
+        Functions[F.getName()] = *SSI->run(F).Summary;
 
     LLVM_DEBUG(for (auto &FN : Functions) FN.getValue().dump(FN.getKey()));
 
@@ -626,10 +629,13 @@ public:
 
 namespace llvm {
 
-void StackSafetyInfo::run(Function &F, FunctionStackSummary &FS) const {
+StackSafetyResults StackSafetyInfo::run(Function &F) const {
   StackSafetyLocalAnalysis SSLA(F, F.getParent()->getDataLayout(),
                                 *GetSECallback(F));
-  SSLA.run(FS);
+  std::unique_ptr<FunctionStackSummary> Summary = llvm::make_unique<FunctionStackSummary>();
+  SSLA.run(*Summary);
+  Summary->dump(F.getName());
+  return StackSafetyResults(std::move(Summary));
 }
 
 StackSafetyInfoWrapperPass::StackSafetyInfoWrapperPass() : ModulePass(ID) {

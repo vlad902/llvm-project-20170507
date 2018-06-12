@@ -23,21 +23,33 @@ namespace llvm {
 class Function;
 class Module;
 class ScalarEvolution;
-
 struct FunctionStackSummary;
 
-// Function-local stack safety analysis interface provided to other analysis
-// consumers like the ModuleSummaryAnalysis.
+/// Abstracts away the internal representation of stack safety results from
+/// analysis consumers.
+class StackSafetyResults {
+public:
+  StackSafetyResults() = delete;
+  StackSafetyResults(std::unique_ptr<FunctionStackSummary> Summary);
+  StackSafetyResults(StackSafetyResults&) = delete;
+  StackSafetyResults(StackSafetyResults&&) = default;
+  ~StackSafetyResults();
+
+  std::unique_ptr<FunctionStackSummary> Summary;
+};
+
+/// Function-local stack safety analysis interface provided to other analysis
+/// consumers like the ModuleSummaryAnalysis.
 class StackSafetyInfo {
   using Callback = std::function<ScalarEvolution *(const Function &F)>;
   Callback GetSECallback;
 
 public:
   StackSafetyInfo(Callback GetSECallback) : GetSECallback(GetSECallback) {}
-  void run(Function &F, FunctionStackSummary &FS) const;
+  StackSafetyResults run(Function &F) const;
 };
 
-// StackSafetyInfo wrapper for the legacy pass manager
+/// StackSafetyInfo wrapper for the legacy pass manager
 class StackSafetyInfoWrapperPass : public ModulePass {
   std::unique_ptr<StackSafetyInfo> SSI;
 
@@ -54,7 +66,7 @@ public:
   void getAnalysisUsage(AnalysisUsage &AU) const override;
 };
 
-// StackSafetyInfo wrapper for the new pass manager
+/// StackSafetyInfo wrapper for the new pass manager
 class StackSafetyAnalysis : public AnalysisInfoMixin<StackSafetyAnalysis> {
   static AnalysisKey Key;
   friend AnalysisInfoMixin<StackSafetyAnalysis>;
@@ -65,8 +77,8 @@ public:
   Result run(Module &M, ModuleAnalysisManager &AM);
 };
 
-// This pass performs the global stack safety analysis and annotates stack-safe
-// allocations with !stack-safe metadata
+/// This pass performs the global stack safety analysis and annotates stack-safe
+/// allocations with !stack-safe metadata
 class StackSafetyGlobalAnalysis : public ModulePass {
 public:
   static char ID;
