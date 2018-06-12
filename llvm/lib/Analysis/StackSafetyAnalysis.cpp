@@ -95,28 +95,24 @@ public:
   }
 };
 
-} // end anonymous namespace
-
-namespace llvm {
-
-struct UseSummary {
+struct SSUseSummary {
   ConstantRange Range;
   ConstantRange LocalRange;
   const Instruction *BadI;
   const char *Reason;
 
-  struct CallSummary {
+  struct SSCallSummary {
     std::string Callee;
     unsigned ParamNo;
     ConstantRange Range;
-    CallSummary(std::string Callee, unsigned ParamNo)
+    SSCallSummary(std::string Callee, unsigned ParamNo)
         : Callee(Callee), ParamNo(ParamNo), Range(64, false) {}
-    CallSummary(std::string Callee, unsigned ParamNo, ConstantRange Range)
+    SSCallSummary(std::string Callee, unsigned ParamNo, ConstantRange Range)
         : Callee(Callee), ParamNo(ParamNo), Range(Range) {}
   };
-  SmallVector<CallSummary, 4> Calls;
+  SmallVector<SSCallSummary, 4> Calls;
 
-  UseSummary() : Range(64, false), LocalRange(64, false), BadI(nullptr), Reason(nullptr) {}
+  SSUseSummary() : Range(64, false), LocalRange(64, false), BadI(nullptr), Reason(nullptr) {}
   void dump() {
     dbgs() << Range;
     for (auto &Call : Calls)
@@ -125,20 +121,20 @@ struct UseSummary {
   }
 };
 
-struct AllocaSummary {
+struct SSAllocaSummary {
   AllocaInst *AI;
   uint64_t Size;
-  UseSummary Summary;
+  SSUseSummary Summary;
 
-  AllocaSummary(AllocaInst *AI, uint64_t Size) : AI(AI), Size(Size) {}
+  SSAllocaSummary(AllocaInst *AI, uint64_t Size) : AI(AI), Size(Size) {}
   void dump() {
     dbgs() << "    alloca %" << AI->getName() << " [" << Size << " bytes]\n      ";
     Summary.dump();
   }
 };
 
-struct ParamSummary {
-  UseSummary Summary;
+struct SSParamSummary {
+  SSUseSummary Summary;
 
   void dump(unsigned ParamNo) {
     dbgs() << "    arg #" << ParamNo << "\n      ";
@@ -146,11 +142,15 @@ struct ParamSummary {
   }
 };
 
+} // end anonymous namespace
+
+namespace llvm {
+
 // FunctionStackSummary could also describe return value as depending on one or
 // more of its arguments.
-struct FunctionStackSummary {
-  SmallVector<AllocaSummary, 4> Allocas;
-  SmallVector<ParamSummary, 4> Params;
+struct SSFunctionSummary {
+  SmallVector<SSAllocaSummary, 4> Allocas;
+  SmallVector<SSParamSummary, 4> Params;
   void dump(StringRef Name) {
     dbgs() << "  @" << Name << "\n";
     for (unsigned i = 0; i < Params.size(); ++i)
@@ -160,7 +160,7 @@ struct FunctionStackSummary {
   }
 };
 
-StackSafetyResults::StackSafetyResults(std::unique_ptr<FunctionStackSummary> Summary) : Summary(std::move(Summary)) {}
+StackSafetyResults::StackSafetyResults(std::unique_ptr<SSFunctionSummary> Summary) : Summary(std::move(Summary)) {}
 StackSafetyResults::~StackSafetyResults() {}
 
 } // end namespace llvm
@@ -185,7 +185,7 @@ class StackSafetyLocalAnalysis {
   ConstantRange GetMemIntrinsicAccessRange(const MemIntrinsic *MI, const Use &U,
                                            const Value *AllocaPtr);
 
-  bool analyzeAllUses(Value *Ptr, UseSummary &AS);
+  bool analyzeAllUses(Value *Ptr, SSUseSummary &AS);
 
 public:
   StackSafetyLocalAnalysis(Function &F, const DataLayout &DL,
@@ -197,7 +197,7 @@ public:
 
   // Run the transformation on the associated function.
   // Returns whether the function was changed.
-  bool run(FunctionStackSummary &);
+  bool run(SSFunctionSummary &);
 };
 
 uint64_t
@@ -266,7 +266,7 @@ ConstantRange StackSafetyLocalAnalysis::GetMemIntrinsicAccessRange(
 /// Check whether a given allocation must be put on the safe
 /// stack or not. The function analyzes all uses of AI and checks whether it is
 /// only accessed in a memory safe way (as decided statically).
-bool StackSafetyLocalAnalysis::analyzeAllUses(Value *Ptr, UseSummary &US) {
+bool StackSafetyLocalAnalysis::analyzeAllUses(Value *Ptr, SSUseSummary &US) {
   // const Value *AllocaPtr = AS.AI;
   // uint64_t AllocaSize = AS.Size;
   // ConstantRange AllocaRange =
@@ -373,7 +373,7 @@ bool StackSafetyLocalAnalysis::analyzeAllUses(Value *Ptr, UseSummary &US) {
           if (A->get() == V) {
             ConstantRange OffsetRange = OffsetFromAlloca(UI, Ptr);
             US.Calls.push_back(
-                UseSummary::CallSummary(Callee->getName(), A - B, OffsetRange));
+                SSUseSummary::SSCallSummary(Callee->getName(), A - B, OffsetRange));
           }
         }
         // Don't visit function return value: if it depends on the alloca, then
@@ -394,7 +394,7 @@ bool StackSafetyLocalAnalysis::analyzeAllUses(Value *Ptr, UseSummary &US) {
   return true;
 }
 
-bool StackSafetyLocalAnalysis::run(FunctionStackSummary &FS) {
+bool StackSafetyLocalAnalysis::run(SSFunctionSummary &FS) {
   assert(!F.isDeclaration() &&
          "Can't run StackSafety on a function declaration");
 
@@ -403,8 +403,8 @@ bool StackSafetyLocalAnalysis::run(FunctionStackSummary &FS) {
   for (Instruction &I : instructions(&F)) {
     if (auto AI = dyn_cast<AllocaInst>(&I)) {
       uint64_t Size = getStaticAllocaAllocationSize(AI);
-      FS.Allocas.push_back(AllocaSummary(AI, Size));
-      AllocaSummary &AS = FS.Allocas.back();
+      FS.Allocas.push_back(SSAllocaSummary(AI, Size));
+      SSAllocaSummary &AS = FS.Allocas.back();
       analyzeAllUses(AI, AS.Summary);
       AS.Summary.LocalRange = AS.Summary.Range;
     }
@@ -414,8 +414,8 @@ bool StackSafetyLocalAnalysis::run(FunctionStackSummary &FS) {
   for (Function::arg_iterator FAI = F.arg_begin(), FAE = F.arg_end();
        FAI != FAE; ++FAI, ++ArgNo) {
     Argument &A = *FAI;
-    FS.Params.push_back(ParamSummary());
-    ParamSummary &PS = FS.Params.back();
+    FS.Params.push_back(SSParamSummary());
+    SSParamSummary &PS = FS.Params.back();
     analyzeAllUses(&A, PS.Summary);
     PS.Summary.LocalRange = PS.Summary.Range;
   }
@@ -425,7 +425,7 @@ bool StackSafetyLocalAnalysis::run(FunctionStackSummary &FS) {
 }
 
 class StackSafetyDataFlowAnalysis {
-  StringMap<FunctionStackSummary> Functions;
+  StringMap<SSFunctionSummary> Functions;
 
 public:
   ConstantRange getArgumentAccessRange(StringRef Name, unsigned ParamNo, bool Local = false) {
@@ -434,7 +434,7 @@ public:
     // call).
     if (IT == Functions.end())
       return ConstantRange(64);
-    FunctionStackSummary &FS = IT->getValue();
+    SSFunctionSummary &FS = IT->getValue();
     if (ParamNo >= FS.Params.size()) // possibly vararg
       return ConstantRange(64);
     return Local ? FS.Params[ParamNo].Summary.LocalRange
@@ -448,7 +448,7 @@ public:
   }
 
   void describeCallIfUnsafe(ConstantRange AllocaRange, ConstantRange PtrRange,
-                            UseSummary::CallSummary &CS,
+                            SSUseSummary::SSCallSummary &CS,
                             std::string Indent, StringSet<> &Visited) {
     ConstantRange ParamRange = PtrRange.add(CS.Range);
 
@@ -467,14 +467,14 @@ public:
       return;
     }
 
-    FunctionStackSummary &FS = IT->getValue();
+    SSFunctionSummary &FS = IT->getValue();
     if (CS.ParamNo >= FS.Params.size()) {
       printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
       dbgs() << Indent << "  unknown argument\n";
       return;
     }
 
-    ParamSummary &PS = FS.Params[CS.ParamNo];
+    SSParamSummary &PS = FS.Params[CS.ParamNo];
     ConstantRange CalleeRange = ParamRange.add(PS.Summary.Range);
     bool Safe = AllocaRange.contains(CalleeRange);
     if (Safe)
@@ -500,7 +500,7 @@ public:
     }
   }
 
-  bool describeAlloca(AllocaSummary &AS) {
+  bool describeAlloca(SSAllocaSummary &AS) {
     dbgs() << "    alloca %" << AS.AI->getName() << " [" << AS.Size << " bytes]\n";
     ConstantRange AllocaRange{APInt(64, 0), APInt(64, AS.Size)};
     bool Safe = AllocaRange.contains(AS.Summary.Range);
@@ -528,7 +528,7 @@ public:
     return false;
   }
 
-  void describeFunction(StringRef Name, FunctionStackSummary &FS) {
+  void describeFunction(StringRef Name, SSFunctionSummary &FS) {
     dbgs() << "  @" << Name << "\n";
     bool Safe = true;
     for (auto &AS : FS.Allocas) {
@@ -538,7 +538,7 @@ public:
       dbgs() << "    function-safe\n";
   }
 
-  bool addMetadata(Function &F, FunctionStackSummary &Summary) {
+  bool addMetadata(Function &F, SSFunctionSummary &Summary) {
     bool Changed = false;
     for (auto &AS : Summary.Allocas) {
       ConstantRange AllocaRange{APInt(64, 0), APInt(64, AS.Size)};
@@ -553,7 +553,7 @@ public:
     return Changed;
   }
 
-  bool updateOneValue(UseSummary &US, bool UpdateToFullSet) {
+  bool updateOneValue(SSUseSummary &US, bool UpdateToFullSet) {
     bool Changed = false;
     for (auto &CS : US.Calls) {
       ConstantRange CalleeRange = getArgumentAccessRange(CS.Callee, CS.ParamNo);
@@ -573,7 +573,7 @@ public:
     bool Changed = false;
     // FIXME: depth-first?
     for (auto &FN : Functions) {
-      FunctionStackSummary &FP = FN.getValue();
+      SSFunctionSummary &FP = FN.getValue();
       for (auto &AS : FP.Allocas)
         Changed |= updateOneValue(AS.Summary, UpdateToFullSet);
       for (auto &PS : FP.Params)
@@ -632,7 +632,7 @@ namespace llvm {
 StackSafetyResults StackSafetyInfo::run(Function &F) const {
   StackSafetyLocalAnalysis SSLA(F, F.getParent()->getDataLayout(),
                                 *GetSECallback(F));
-  std::unique_ptr<FunctionStackSummary> Summary = llvm::make_unique<FunctionStackSummary>();
+  std::unique_ptr<SSFunctionSummary> Summary = llvm::make_unique<SSFunctionSummary>();
   SSLA.run(*Summary);
   Summary->dump(F.getName());
   return StackSafetyResults(std::move(Summary));
