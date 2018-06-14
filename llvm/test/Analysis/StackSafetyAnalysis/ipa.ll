@@ -9,6 +9,7 @@ declare void @Write4_2(i8* %p, i8* %q)
 declare void @Write8(i8* %p)
 declare dso_local void @ExternalCall(i8* %p)
 declare void @PreemptableWrite1(i8* %p)
+declare void @InterposableWrite1(i8* %p)
 declare i8* @ReturnDependent(i8* %p)
 declare void @Rec2(i8* %p)
 declare void @RecursiveNoOffset(i32* %p, i32 %size, i32* %acc)
@@ -90,6 +91,17 @@ entry:
   %x1 = bitcast i32* %x to i8*
 ; CHECK: %x = alloca i32, align 4{{$}}
   call void @PreemptableWrite1(i8* %x1)
+  ret void
+}
+
+; Call to function with interposable linkage
+define void @InterposableCall() {
+; CHECK-LABEL: define void @InterposableCall
+entry:
+  %x = alloca i32, align 4
+  %x1 = bitcast i32* %x to i8*
+; CHECK: %x = alloca i32, align 4{{$}}
+  call void @InterposableWrite1(i8* %x1)
   ret void
 }
 

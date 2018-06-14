@@ -173,6 +173,9 @@ struct SSFunctionSummary {
   Function *F;
   SmallVector<SSAllocaSummary, 4> Allocas;
   SmallVector<SSParamSummary, 4> Params;
+  unsigned DSOLocal : 1;
+  unsigned Interposable : 1;
+
   std::string name(FunctionID ID) {
     if (F)
       return "@" + F->getName().str();
@@ -391,12 +394,7 @@ bool StackSafetyLocalAnalysis::analyzeAllUses(Value *Ptr, SSUseSummary &US) {
           US.Range = ConstantRange(64);
           return false;
         }
-        if (!Callee->isDSOLocal()) {
-          US.BadI = I;
-          US.Reason = "dso_preemptable symbol";
-          US.Range = ConstantRange(64);
-          return false;
-        }
+
         ImmutableCallSite::arg_iterator B = CS.arg_begin(), E = CS.arg_end();
         for (ImmutableCallSite::arg_iterator A = B; A != E; ++A) {
           if (A->get() == V) {
@@ -429,6 +427,8 @@ bool StackSafetyLocalAnalysis::run(SSFunctionSummary &FS) {
 
   LLVM_DEBUG(dbgs() << "[StackSafety] " << F.getName() << "\n");
   FS.F = &F;
+  FS.DSOLocal = F.isDSOLocal();
+  FS.Interposable = F.isInterposable();
 
   for (Instruction &I : instructions(&F)) {
     if (auto AI = dyn_cast<AllocaInst>(&I)) {
@@ -488,11 +488,14 @@ private:
 ConstantRange StackSafetyDataFlowAnalysis::getArgumentAccessRange(
     FunctionID ID, unsigned ParamNo, bool Local = false) {
   auto IT = Functions.find(ID);
-  // Unknown callee (outside of LTO domain, dso_preemptable, or an indirect
-  // call).
+  // Unknown callee (outside of LTO domain or an indirect call).
   if (IT == Functions.end())
     return ConstantRange(64);
   SSFunctionSummary &FS = *IT->second;
+  // The definition of this symbol may not be the definition in this linkage
+  // unit.
+  if (!FS.DSOLocal || FS.Interposable)
+    return ConstantRange(64);
   if (ParamNo >= FS.Params.size()) // possibly vararg
     return ConstantRange(64);
   return Local ? FS.Params[ParamNo].Summary.LocalRange
@@ -525,8 +528,7 @@ void StackSafetyDataFlowAnalysis::describeCallIfUnsafe(
   Visited.insert(CS.Callee);
 
   auto IT = Functions.find(CS.Callee);
-  // Unknown callee (outside of LTO domain, dso_preemptable, or an indirect
-  // call).
+  // Unknown callee (outside of LTO domain or an indirect call).
   if (IT == Functions.end()) {
     printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
     dbgs() << Indent << "  external call\n";
@@ -534,6 +536,14 @@ void StackSafetyDataFlowAnalysis::describeCallIfUnsafe(
   }
 
   SSFunctionSummary &FS = *IT->second;
+  // The definition of this symbol may not be the definition in this linkage
+  // unit.
+  if (!FS.DSOLocal || FS.Interposable) {
+    printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
+    dbgs() << Indent << "  " << (FS.DSOLocal ? "" : "dso_preemptable ")
+           << (FS.Interposable ? "interposable" : "") << "\n";
+    return;
+  }
   if (CS.ParamNo >= FS.Params.size()) {
     printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
     dbgs() << Indent << "  unknown argument\n";

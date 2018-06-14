@@ -35,6 +35,12 @@ entry:
   ret void
 }
 
+define linkonce dso_local void @InterposableWrite1(i8* %p) {
+entry:
+  store i8 0, i8* %p, align 1
+  ret void
+}
+
 define dso_local i8* @ReturnDependent(i8* %p) {
 entry:
   %p2 = getelementptr i8, i8* %p, i64 2
