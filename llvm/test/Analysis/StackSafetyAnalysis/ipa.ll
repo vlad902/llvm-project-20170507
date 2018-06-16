@@ -15,6 +15,12 @@ declare void @Rec2(i8* %p)
 declare void @RecursiveNoOffset(i32* %p, i32 %size, i32* %acc)
 declare void @RecursiveWithOffset(i32 %size, i32* %acc)
 
+define private void @PrivateWrite1(i8* %p) {
+entry:
+  store i8 0, i8* %p, align 1
+  ret void
+}
+
 ; Basic out-of-bounds.
 define void @f1() {
 ; CHECK-LABEL: define void @f1
@@ -104,6 +110,18 @@ entry:
   call void @InterposableWrite1(i8* %x1)
   ret void
 }
+
+; Call to function with private linkage
+define void @PrivateCall() {
+; CHECK-LABEL: define void @PrivateCall
+entry:
+  %x = alloca i32, align 4
+  %x1 = bitcast i32* %x to i8*
+; CHECK: %x = alloca i32, align 4, !stack-safe
+  call void @PrivateWrite1(i8* %x1)
+  ret void
+}
+
 
 ; Caller returns a dependent value.
 ; FIXME: alloca considered unsafe even if the return value is unused.
