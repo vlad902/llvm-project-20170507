@@ -472,11 +472,11 @@ private:
                             DenseSet<FunctionID> &Visited);
   bool describeAlloca(SSAllocaSummary &AS);
   void describeFunction(FunctionID ID, SSFunctionSummary &FS);
-  bool addMetadata(Function &F, SSFunctionSummary &Summary);
   bool updateOneUse(SSUseSummary &US, bool UpdateToFullSet);
   void updateOneNode(FunctionID ID, SSFunctionSummary &FS);
   void runDataFlow();
   void verifyFixedPoint();
+  bool addMetadata(Function &F, SSFunctionSummary &Summary);
 
   FunctionMap &Functions;
   // Callee-to-Caller multimap.
@@ -617,22 +617,6 @@ void StackSafetyDataFlowAnalysis::describeFunction(FunctionID ID,
     dbgs() << "    function-safe\n";
 }
 
-bool StackSafetyDataFlowAnalysis::addMetadata(Function &F,
-                                              SSFunctionSummary &Summary) {
-  bool Changed = false;
-  for (auto &AS : Summary.Allocas) {
-    ConstantRange AllocaRange{APInt(64, 0), APInt(64, AS.Size)};
-    bool Safe = AllocaRange.contains(AS.Summary.Range);
-    if (!Safe)
-      continue;
-    Changed = true;
-    Module *M = F.getParent();
-    AS.AI->setMetadata(M->getMDKindID("stack-safe"),
-                       MDNode::get(M->getContext(), None));
-  }
-  return Changed;
-}
-
 bool StackSafetyDataFlowAnalysis::updateOneUse(SSUseSummary &US,
                                                  bool UpdateToFullSet) {
   bool Changed = false;
@@ -723,6 +707,19 @@ bool StackSafetyDataFlowAnalysis::addAllMetadata(Module &M) {
   return Changed;
 }
 
+bool StackSafetyDataFlowAnalysis::addMetadata(Function &F,
+                                              SSFunctionSummary &Summary) {
+  bool Changed = false;
+  for (auto &AS : Summary.Allocas) {
+    ConstantRange AllocaRange{APInt(64, 0), APInt(64, AS.Size)};
+    bool Safe = AllocaRange.contains(AS.Summary.Range);
+    if (!Safe)
+      continue;
+    Changed = true;
+    Module *M = F.getParent();
+    AS.AI->setMetadata(M->getMDKindID("stack-safe"),
+                       MDNode::get(M->getContext(), None));
+  }
   return Changed;
 }
 
