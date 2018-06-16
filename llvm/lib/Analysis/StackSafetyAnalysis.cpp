@@ -95,10 +95,6 @@ public:
   }
 };
 
-static inline GlobalValue::GUID GUID(const Function *F) {
-  return GlobalValue::getGUID(GlobalValue::dropLLVMManglingEscape(F->getName()));
-}
-
 using FunctionID = GlobalValue::GUID;
 
 struct SSUseSummary {
@@ -113,9 +109,9 @@ struct SSUseSummary {
     unsigned ParamNo;
     ConstantRange Range;
     SSCallSummary(Function *F, unsigned ParamNo)
-        : F(F), Callee(GUID(F)), ParamNo(ParamNo), Range(64, false) {}
+        : F(F), Callee(F->getGUID()), ParamNo(ParamNo), Range(64, false) {}
     SSCallSummary(Function *F, unsigned ParamNo, ConstantRange Range)
-        : F(F), Callee(GUID(F)), ParamNo(ParamNo), Range(Range) {}
+        : F(F), Callee(F->getGUID()), ParamNo(ParamNo), Range(Range) {}
     SSCallSummary(FunctionID Callee, unsigned ParamNo, ConstantRange Range)
         : F(nullptr), Callee(Callee), ParamNo(ParamNo), Range(Range) {}
     std::string name() {
@@ -718,7 +714,10 @@ bool StackSafetyDataFlowAnalysis::addAllMetadata(Module &M) {
   bool Changed = false;
   for (auto &F : M.functions())
     if (!F.isDeclaration())
-      Changed |= addMetadata(F, *Functions[GUID(&F)]);
+      Changed |= addMetadata(F, *Functions[F.getGUID()]);
+
+  return Changed;
+}
 
   return Changed;
 }
@@ -733,7 +732,7 @@ StackSafetyResults StackSafetyInfo::run(Function &F) const {
   std::unique_ptr<SSFunctionSummary> Summary =
       llvm::make_unique<SSFunctionSummary>();
   SSLA.run(*Summary);
-  LLVM_DEBUG(Summary->dump(GUID(&F)));
+  LLVM_DEBUG(Summary->dump(F.getGUID()));
   return StackSafetyResults(std::move(Summary));
 }
 
@@ -786,7 +785,7 @@ bool StackSafetyGlobalAnalysis::runOnModule(Module &M) {
   StackSafetyDataFlowAnalysis::FunctionMap Functions;
   for (auto &F : M.functions())
     if (!F.isDeclaration())
-      Functions[GUID(&F)] = std::move(SSI.run(F).Summary);
+      Functions[F.getGUID()] = std::move(SSI.run(F).Summary);
 
   StackSafetyDataFlowAnalysis SSDFA(Functions);
   if (!SSDFA.run())
