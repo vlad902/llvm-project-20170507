@@ -528,6 +528,10 @@ ConstantRange StackSafetyDataFlowAnalysis::getArgumentAccessRange(
   // unit.
   if (!FS.DSOLocal || FS.Interposable)
     return ConstantRange(64);
+  // TODO: Save whether a function is vararg to the (SS)FunctionSummary and
+  // verify that we received the correct number of params. This will require
+  // generating parameters for escaped functions defined in assembly as tested
+  // by test/Analysis/StackSafetyAnalysis/thinlto_module_asm.ll
   if (ParamNo >= FS.Params.size()) // possibly vararg
     return ConstantRange(64);
   return Local ? FS.Params[ParamNo].Summary.LocalRange
