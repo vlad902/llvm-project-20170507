@@ -24,6 +24,7 @@
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/CodeGen/TargetLowering.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
@@ -94,6 +95,19 @@ public:
     return Expr;
   }
 };
+
+/// Return a list of all of the 'alloca' instructions in a function in a
+/// deterministic order. This is necessary to ensure that the allocas serialized
+/// to a FunctionSummary are written and read in the same order.
+std::vector<AllocaInst*> allocas(Function *F) {
+  // TODO: This happens to work, but probably by accident.
+  std::vector<AllocaInst *> insts;
+  for (auto &I : instructions(F))
+    if (auto AI = dyn_cast<AllocaInst>(&I))
+      insts.push_back(AI);
+
+  return std::move(insts);
+}
 
 using FunctionID = GlobalValue::GUID;
 
@@ -166,7 +180,12 @@ namespace llvm {
 // FunctionStackSummary could also describe return value as depending on one or
 // more of its arguments.
 struct SSFunctionSummary {
-  Function *F;
+  SSFunctionSummary() = default;
+  // Constructor that converts from a FunctionSummary
+  SSFunctionSummary(FunctionSummary &FS);
+
+  Function *F;         // Optional
+  FunctionSummary *FS; // Optional
   SmallVector<SSAllocaSummary, 4> Allocas;
   SmallVector<SSParamSummary, 4> Params;
   unsigned DSOLocal : 1;
@@ -190,9 +209,32 @@ struct SSFunctionSummary {
   }
 };
 
+SSFunctionSummary::SSFunctionSummary(FunctionSummary &FS) {
+  this->F = nullptr;
+  this->FS = &FS;
+  this->DSOLocal = FS.isDSOLocal();
+  // Non-prevailing functions are not marked live.
+  this->Interposable = !FS.isLive();
+  for (auto &AS : FS.allocas()) {
+    this->Allocas.emplace_back(nullptr, AS.Size);
+    SSUseSummary &US = this->Allocas.back().Summary;
+    US.Range = US.LocalRange = AS.Range;
+    for (auto &Call : AS.CallUses)
+      US.Calls.emplace_back(Call.Callee, Call.ParamNo, Call.Range);
+  }
+  for (auto &PS : FS.params()) {
+    this->Params.emplace_back();
+    SSUseSummary &US = this->Params.back().Summary;
+    US.Range = US.LocalRange = PS.Range;
+    for (auto &Call : PS.CallUses)
+      US.Calls.emplace_back(Call.Callee, Call.ParamNo, Call.Range);
+  }
+}
+
 StackSafetyResults::StackSafetyResults(
     std::unique_ptr<SSFunctionSummary> Summary)
     : Summary(std::move(Summary)) {}
+
 StackSafetyResults::~StackSafetyResults() {}
 
 // Converts a SSFunctionSummary to the relevant FunctionSummary constructor
@@ -241,8 +283,6 @@ class StackSafetyLocalAnalysis {
   Type *Int32Ty;
   Type *Int8Ty;
 
-  uint64_t getStaticAllocaAllocationSize(const AllocaInst* AI);
-
   ConstantRange OffsetFromAlloca(Value *Addr, const Value *AllocaPtr);
 
   ConstantRange GetAccessRange(Value *Addr, const Value *AllocaPtr, uint64_t AccessSize);
@@ -262,10 +302,12 @@ public:
   // Run the transformation on the associated function.
   // Returns whether the function was changed.
   bool run(SSFunctionSummary &);
+  static uint64_t getStaticAllocaAllocationSize(const AllocaInst* AI);
 };
 
 uint64_t
 StackSafetyLocalAnalysis::getStaticAllocaAllocationSize(const AllocaInst *AI) {
+  const DataLayout &DL = AI->getModule()->getDataLayout();
   uint64_t Size = DL.getTypeAllocSize(AI->getAllocatedType());
   if (AI->isArrayAllocation()) {
     auto C = dyn_cast<ConstantInt>(AI->getArraySize());
@@ -462,14 +504,12 @@ bool StackSafetyLocalAnalysis::run(SSFunctionSummary &FS) {
   FS.DSOLocal = F.isDSOLocal();
   FS.Interposable = F.isInterposable();
 
-  for (Instruction &I : instructions(&F)) {
-    if (auto AI = dyn_cast<AllocaInst>(&I)) {
-      uint64_t Size = getStaticAllocaAllocationSize(AI);
-      FS.Allocas.push_back(SSAllocaSummary(AI, Size));
-      SSAllocaSummary &AS = FS.Allocas.back();
-      analyzeAllUses(AI, AS.Summary);
-      AS.Summary.LocalRange = AS.Summary.Range;
-    }
+  for (AllocaInst *AI : allocas(&F)) {
+    uint64_t Size = getStaticAllocaAllocationSize(AI);
+    FS.Allocas.push_back(SSAllocaSummary(AI, Size));
+    SSAllocaSummary &AS = FS.Allocas.back();
+    analyzeAllUses(AI, AS.Summary);
+    AS.Summary.LocalRange = AS.Summary.Range;
   }
 
   unsigned ArgNo = 0;
@@ -767,8 +807,7 @@ StackSafetyResults StackSafetyInfo::run(const Function &F) const {
   StackSafetyLocalAnalysis SSLA(const_cast<Function&>(F),
                                 F.getParent()->getDataLayout(),
                                 *GetSECallback(F));
-  std::unique_ptr<SSFunctionSummary> Summary =
-      llvm::make_unique<SSFunctionSummary>();
+  auto Summary = llvm::make_unique<SSFunctionSummary>();
   SSLA.run(*Summary);
   LLVM_DEBUG(Summary->dump(F.getGUID()));
   return StackSafetyResults(std::move(Summary));
@@ -801,6 +840,10 @@ bool StackSafetyInfoWrapperPass::doFinalization(Module &M) {
 
 char StackSafetyInfoWrapperPass::ID = 0;
 
+ModulePass *createStackSafetyInfoWrapperPass() {
+  return new StackSafetyInfoWrapperPass();
+}
+
 AnalysisKey StackSafetyAnalysis::Key;
 
 StackSafetyInfo StackSafetyAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
@@ -810,7 +853,8 @@ StackSafetyInfo StackSafetyAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
   });
 }
 
-StackSafetyGlobalAnalysis::StackSafetyGlobalAnalysis() : ModulePass(ID) {
+StackSafetyGlobalAnalysis::StackSafetyGlobalAnalysis(const ModuleSummaryIndex *Summary) : ModulePass(ID) {
+  ImportSummary = Summary;
   initializeStackSafetyGlobalAnalysisPass(*PassRegistry::getPassRegistry());
 }
 
@@ -819,20 +863,141 @@ void StackSafetyGlobalAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
 }
 
 bool StackSafetyGlobalAnalysis::runOnModule(Module &M) {
-  StackSafetyInfo &SSI = getAnalysis<StackSafetyInfoWrapperPass>().getSSI();
   StackSafetyDataFlowAnalysis::FunctionMap Functions;
-  for (auto &F : M.functions())
-    if (!F.isDeclaration())
-      Functions[F.getGUID()] = std::move(SSI.run(F).Summary);
+
+  // Without ThinLTO, run the local analysis for every function in the TU and
+  // then run the DFA and annotate allocas
+  if (!ImportSummary) {
+    StackSafetyInfo &SSI = getAnalysis<StackSafetyInfoWrapperPass>().getSSI();
+    for (auto &F : M.functions())
+      if (!F.isDeclaration())
+        Functions[F.getGUID()] = std::move(SSI.run(F).Summary);
+
+    StackSafetyDataFlowAnalysis SSDFA(Functions);
+    SSDFA.run();
+    return SSDFA.addAllMetadata(M);
+  }
+
+  // If we have a summary, the global data flow analysis has already been run.
+  // We just need to convert the ModuleSummaryIndex to a FunctionMap and
+  // annotate allocas.
+  for (auto &F : M.functions()) {
+    if (F.isDeclaration())
+      continue;
+
+    auto *GVS = ImportSummary->findSummaryInModule(F.getGUID(),
+                                                   M.getModuleIdentifier());
+    if (!GVS) {
+      // This function may have been promoted and renamed, get it's original
+      // name and GUID.
+      StringRef OrigName = ModuleSummaryIndex::getOriginalNameBeforePromote(
+          F.getName());
+      GlobalValue::GUID GUID = GlobalValue::getGUID(
+          GlobalValue::dropLLVMManglingEscape(OrigName));
+      if (auto RenamedGUID = ImportSummary->getGUIDFromOriginalID(GUID))
+        GUID = RenamedGUID;
+
+      if (F.hasLocalLinkage()) {
+        // This function was internalized, look it up by it's unlocalized GUID
+        GVS = ImportSummary->findSummaryInModule(GUID, M.getModuleIdentifier());
+      } else if (F.hasAvailableExternallyLinkage() || F.hasHiddenVisibility()) {
+        // This function is located in this module due to cross-module importing,
+        // locate the definition it was imported from.
+        auto VI = ImportSummary->getValueInfo(GUID);
+        assert(VI && !VI.getSummaryList().empty());
+        for (auto &ImportedGVS : VI.getSummaryList()) {
+          if (isa<FunctionSummary>(ImportedGVS))
+            GVS = &*ImportedGVS;
+          else if (auto *AS = dyn_cast<AliasSummary>(&*ImportedGVS))
+            if (isa<FunctionSummary>(AS->getAliasee()))
+              GVS = const_cast<GlobalValueSummary*>(&AS->getAliasee());
+
+          if (GVS && GVS->isLive())
+            break;
+        }
+      }
+    }
+
+    assert(GVS && "GlobalValueSummary for function not found");
+    assert(isa<FunctionSummary>(GVS) && "Function has incorrect summary");
+
+    FunctionSummary *FS = dyn_cast<FunctionSummary>(GVS);
+    auto Summary = llvm::make_unique<SSFunctionSummary>(*FS);
+    Summary->F = &F;
+
+    // Set the SSAllocaSummary AllocaInst pointers if the function is alive
+    // (allocas for dead functions are dropped in stackSafetyGlobalAnalysis)
+    if (FS->isLive()) {
+      std::vector<AllocaInst*> Allocas = allocas(&F);
+      assert(Allocas.size() == FS->allocas().size() &&
+             "Number of allocas differs between the function and the summary");
+
+      for (unsigned I = 0, E = Allocas.size(); I < E; I++) {
+        AllocaInst *AI = Allocas[I];
+        assert(Summary->Allocas[I].Size ==
+               StackSafetyLocalAnalysis::getStaticAllocaAllocationSize(AI) &&
+               "Alloca size doesn't match summary");
+        Summary->Allocas[I].AI = AI;
+      }
+    }
+
+    Functions[F.getGUID()] = std::move(Summary);
+  }
 
   StackSafetyDataFlowAnalysis SSDFA(Functions);
-  if (!SSDFA.run())
-    return false;
-
   return SSDFA.addAllMetadata(M);
 }
 
 char StackSafetyGlobalAnalysis::ID = 0;
+
+void stackSafetyGlobalAnalysis(ModuleSummaryIndex &Index) {
+  StackSafetyDataFlowAnalysis::FunctionMap Functions;
+
+  // Convert the ModuleSummaryIndex to a FunctionMap
+  for (auto &GVS : Index) {
+    if (!GVS.second.SummaryList.size() ||
+        !isa<FunctionSummary>(GVS.second.SummaryList.front().get()))
+      continue;
+
+    for (auto &GV : GVS.second.SummaryList) {
+      FunctionSummary *FS = dyn_cast<FunctionSummary>(GV.get());
+      if (!FS->isLive()) {
+        // This function is not live, drop allocas/params so they won't be
+        // serialized/deserialized
+        FS->setAllocas(std::vector<FunctionSummary::Alloca>());
+        FS->clearParams();
+        continue;
+      }
+
+      Functions[GVS.first] = llvm::make_unique<SSFunctionSummary>(*FS);
+    }
+  }
+
+  StackSafetyDataFlowAnalysis SSDFA(Functions);
+  SSDFA.run();
+
+  // Write the analysis results back to the module summary.
+  std::vector<FunctionSummary::Alloca> NewAllocas;
+  for (auto &FN : Functions) {
+    FunctionSummary *FS = FN.second->FS;
+    NewAllocas.clear();
+
+    // Only save sizes/ranges for allocas, we don't need to preserve parameters
+    // or call uses for the backend annotation step.
+    FS->clearParams();
+    for (auto &AS : FN.second->Allocas) {
+      NewAllocas.emplace_back();
+      FunctionSummary::Alloca &New = NewAllocas.back();
+      New.Size = AS.Size;
+      New.Range = AS.Summary.Range;
+    }
+    FS->setAllocas(std::move(NewAllocas));
+  }
+}
+
+ModulePass *createStackSafetyGlobalAnalysis(const ModuleSummaryIndex *ImportSummary) {
+  return new StackSafetyGlobalAnalysis(ImportSummary);
+}
 
 } // namespace llvm
 
@@ -847,10 +1012,3 @@ INITIALIZE_PASS_BEGIN(StackSafetyGlobalAnalysis, "stack-safety",
 INITIALIZE_PASS_DEPENDENCY(StackSafetyInfoWrapperPass)
 INITIALIZE_PASS_END(StackSafetyGlobalAnalysis, "stack-safety",
                     "Stack safety global analysis pass", false, false)
-
-ModulePass *llvm::createStackSafetyInfoWrapperPass() {
-  return new StackSafetyInfoWrapperPass();
-}
-ModulePass *llvm::createStackSafetyGlobalAnalysis() {
-  return new StackSafetyGlobalAnalysis();
-}

@@ -644,6 +644,20 @@ public:
     return Params;
   }
 
+  /// Clear the uses for parameters in this function, these values are cleared
+  /// after the StackSafetyGlobalAnalysis as they are not required by the
+  /// backends.
+  void clearParams() {
+    Params.clear();
+  }
+
+  /// Set the uses for parameters in this function, these values are updated
+  /// after the StackSafetyGlobalAnalysis as only some of the information is
+  /// required by the backends.
+  void setAllocas(std::vector<Alloca> NewAllocas) {
+    Allocas = std::move(NewAllocas);
+  }
+
   /// Add a type test to the summary. This is used by WholeProgramDevirt if we
   /// were unable to devirtualize a checked call.
   void addTypeTest(GlobalValue::GUID Guid) {

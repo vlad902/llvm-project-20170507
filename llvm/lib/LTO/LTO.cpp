@@ -13,6 +13,7 @@
 
 #include "llvm/LTO/LTO.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/Analysis/StackSafetyAnalysis.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Bitcode/BitcodeReader.h"
@@ -1212,6 +1213,10 @@ Error LTO::runThinLTO(AddStreamFn AddStream, NativeObjectCache Cache) {
   };
   thinLTOResolveWeakForLinkerInIndex(ThinLTO.CombinedIndex, isPrevailing,
                                      recordNewLinkage);
+
+  // Run the global StackSafety analysis step.
+  // TODO: Only run this when the SSA results are required.
+  llvm::stackSafetyGlobalAnalysis(ThinLTO.CombinedIndex);
 
   std::unique_ptr<ThinBackendProc> BackendProc =
       ThinLTO.Backend(Conf, ThinLTO.CombinedIndex, ModuleToDefinedGVSummaries,

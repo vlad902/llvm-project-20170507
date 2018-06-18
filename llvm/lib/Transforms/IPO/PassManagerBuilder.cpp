@@ -22,6 +22,7 @@
 #include "llvm/Analysis/InlineCost.h"
 #include "llvm/Analysis/Passes.h"
 #include "llvm/Analysis/ScopedNoAliasAA.h"
+#include "llvm/Analysis/StackSafetyAnalysis.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TypeBasedAliasAnalysis.h"
 #include "llvm/IR/DataLayout.h"
@@ -908,6 +909,11 @@ void PassManagerBuilder::populateThinLTOPassManager(
 
   if (VerifyInput)
     PM.add(createVerifierPass());
+
+  // This pass needs to run as early as possible in the pass pipeline because it
+  // requires that no 'alloca's have been modified since the front-ends ran.
+  if (ImportSummary)
+    PM.add(createStackSafetyGlobalAnalysis(ImportSummary));
 
   if (ImportSummary) {
     // These passes import type identifier resolutions for whole-program
