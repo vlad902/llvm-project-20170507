@@ -175,7 +175,11 @@ struct SSFunctionSummary {
   std::string name(FunctionID ID) {
     if (F)
       return "@" + F->getName().str();
-    return "#" + utostr(ID);
+
+    std::string result = "#" + utostr(ID);
+    if (FS)
+      result += ("[" + FS->modulePath() + "]").str();
+    return result;
   }
   void dump(FunctionID ID) {
     dbgs() << "  " << name(ID) << "\n";
