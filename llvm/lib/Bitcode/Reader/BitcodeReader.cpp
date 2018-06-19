@@ -5288,8 +5288,7 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(unsigned ID) {
           std::move(PendingTypeCheckedLoadVCalls),
           std::move(PendingTypeTestAssumeConstVCalls),
           std::move(PendingTypeCheckedLoadConstVCalls),
-          std::move(PendingAllocas),
-          std::move(PendingParams));
+          std::move(PendingAllocas), std::move(PendingParams));
       PendingTypeTests.clear();
       PendingTypeTestAssumeVCalls.clear();
       PendingTypeCheckedLoadVCalls.clear();
@@ -5385,8 +5384,7 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(unsigned ID) {
           std::move(PendingTypeCheckedLoadVCalls),
           std::move(PendingTypeTestAssumeConstVCalls),
           std::move(PendingTypeCheckedLoadConstVCalls),
-          std::move(PendingAllocas),
-          std::move(PendingParams));
+          std::move(PendingAllocas), std::move(PendingParams));
       PendingTypeTests.clear();
       PendingTypeTestAssumeVCalls.clear();
       PendingTypeCheckedLoadVCalls.clear();
