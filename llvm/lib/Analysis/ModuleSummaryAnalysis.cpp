@@ -26,6 +26,7 @@
 #include "llvm/Analysis/IndirectCallPromotionAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ProfileSummaryInfo.h"
+#include "llvm/Analysis/StackSafetyAnalysis.h"
 #include "llvm/Analysis/TypeMetadataUtils.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
@@ -211,7 +212,8 @@ static void addIntrinsicToSummary(
 static void
 computeFunctionSummary(ModuleSummaryIndex &Index, const Module &M,
                        const Function &F, BlockFrequencyInfo *BFI,
-                       ProfileSummaryInfo *PSI, bool HasLocalsInUsedOrAsm,
+                       ProfileSummaryInfo *PSI, const StackSafetyInfo *SSI,
+                       bool HasLocalsInUsedOrAsm,
                        DenseSet<GlobalValue::GUID> &CantBePromoted) {
   // Summary not currently supported for anonymous functions, they should
   // have been named.
@@ -353,12 +355,16 @@ computeFunctionSummary(ModuleSummaryIndex &Index, const Module &M,
       F.hasFnAttribute(Attribute::NoRecurse),
       F.returnDoesNotAlias(),
   };
+  std::vector<FunctionSummary::Alloca> Allocas;
+  std::vector<FunctionSummary::LocalUse> Params;
+  // TODO: Only run this when SSA results are required.
+  SSI->run(F).generateFunctionSummaryInfo(Allocas, Params);
   auto FuncSummary = llvm::make_unique<FunctionSummary>(
       Flags, NumInsts, FunFlags, RefEdges.takeVector(),
       CallGraphEdges.takeVector(), TypeTests.takeVector(),
       TypeTestAssumeVCalls.takeVector(), TypeCheckedLoadVCalls.takeVector(),
       TypeTestAssumeConstVCalls.takeVector(),
-      TypeCheckedLoadConstVCalls.takeVector());
+      TypeCheckedLoadConstVCalls.takeVector(), Allocas, Params);
   if (NonRenamableLocal)
     CantBePromoted.insert(F.getGUID());
   Index.addGlobalValueSummary(F.getName(), std::move(FuncSummary));
@@ -406,7 +412,7 @@ static void setLiveRoot(ModuleSummaryIndex &Index, StringRef Name) {
 ModuleSummaryIndex llvm::buildModuleSummaryIndex(
     const Module &M,
     std::function<BlockFrequencyInfo *(const Function &F)> GetBFICallback,
-    ProfileSummaryInfo *PSI) {
+    ProfileSummaryInfo *PSI, const StackSafetyInfo *SSI) {
   assert(PSI);
   ModuleSummaryIndex Index(/*HaveGVs=*/true);
 
@@ -471,7 +477,9 @@ ModuleSummaryIndex llvm::buildModuleSummaryIndex(
                     ArrayRef<FunctionSummary::VFuncId>{},
                     ArrayRef<FunctionSummary::VFuncId>{},
                     ArrayRef<FunctionSummary::ConstVCall>{},
-                    ArrayRef<FunctionSummary::ConstVCall>{});
+                    ArrayRef<FunctionSummary::ConstVCall>{},
+                    ArrayRef<FunctionSummary::Alloca>{},
+                    ArrayRef<FunctionSummary::LocalUse>{});
             Index.addGlobalValueSummary(Name, std::move(Summary));
           } else {
             std::unique_ptr<GlobalVarSummary> Summary =
@@ -499,7 +507,7 @@ ModuleSummaryIndex llvm::buildModuleSummaryIndex(
       BFI = BFIPtr.get();
     }
 
-    computeFunctionSummary(Index, M, F, BFI, PSI,
+    computeFunctionSummary(Index, M, F, BFI, PSI, SSI,
                            !LocalsUsed.empty() || HasLocalInlineAsmSymbol,
                            CantBePromoted);
   }
@@ -574,9 +582,10 @@ ModuleSummaryIndex llvm::buildModuleSummaryIndex(
 
 AnalysisKey ModuleSummaryIndexAnalysis::Key;
 
-ModuleSummaryIndex
-ModuleSummaryIndexAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
+ModuleSummaryIndex ModuleSummaryIndexAnalysis::run(Module &M,
+                                                   ModuleAnalysisManager &AM) {
   ProfileSummaryInfo &PSI = AM.getResult<ProfileSummaryAnalysis>(M);
+  StackSafetyInfo &SSI = AM.getResult<StackSafetyAnalysis>(M);
   auto &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
   return buildModuleSummaryIndex(
       M,
@@ -584,7 +593,7 @@ ModuleSummaryIndexAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
         return &FAM.getResult<BlockFrequencyAnalysis>(
             *const_cast<Function *>(&F));
       },
-      &PSI);
+      &PSI, &SSI);
 }
 
 char ModuleSummaryIndexWrapperPass::ID = 0;
@@ -593,6 +602,7 @@ INITIALIZE_PASS_BEGIN(ModuleSummaryIndexWrapperPass, "module-summary-analysis",
                       "Module Summary Analysis", false, true)
 INITIALIZE_PASS_DEPENDENCY(BlockFrequencyInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(ProfileSummaryInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(StackSafetyInfoWrapperPass)
 INITIALIZE_PASS_END(ModuleSummaryIndexWrapperPass, "module-summary-analysis",
                     "Module Summary Analysis", false, true)
 
@@ -607,6 +617,7 @@ ModuleSummaryIndexWrapperPass::ModuleSummaryIndexWrapperPass()
 
 bool ModuleSummaryIndexWrapperPass::runOnModule(Module &M) {
   auto &PSI = *getAnalysis<ProfileSummaryInfoWrapperPass>().getPSI();
+  auto &SSI = getAnalysis<StackSafetyInfoWrapperPass>().getSSI();
   Index = buildModuleSummaryIndex(
       M,
       [this](const Function &F) {
@@ -614,7 +625,7 @@ bool ModuleSummaryIndexWrapperPass::runOnModule(Module &M) {
                          *const_cast<Function *>(&F))
                      .getBFI());
       },
-      &PSI);
+      &PSI, &SSI);
   return false;
 }
 
@@ -627,4 +638,5 @@ void ModuleSummaryIndexWrapperPass::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.setPreservesAll();
   AU.addRequired<BlockFrequencyInfoWrapperPass>();
   AU.addRequired<ProfileSummaryInfoWrapperPass>();
+  AU.addRequired<StackSafetyInfoWrapperPass>();
 }

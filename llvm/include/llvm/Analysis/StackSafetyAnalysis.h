@@ -15,6 +15,7 @@
 #define LLVM_ANALYSIS_STACKSAFETYANALYSIS_H
 
 #include "llvm/ADT/Optional.h"
+#include "llvm/IR/ModuleSummaryIndex.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Pass.h"
 
@@ -35,6 +36,12 @@ public:
   StackSafetyResults(StackSafetyResults &&) = default;
   ~StackSafetyResults();
 
+  /// Generate FunctionSummary initialization parameters from the results of the
+  /// function-local stack safety analysis.
+  void
+  generateFunctionSummaryInfo(std::vector<FunctionSummary::Alloca> &Allocas,
+                              std::vector<FunctionSummary::LocalUse> &Params);
+
   std::unique_ptr<SSFunctionSummary> Summary;
 };
 
@@ -46,7 +53,7 @@ class StackSafetyInfo {
 
 public:
   StackSafetyInfo(Callback GetSECallback) : GetSECallback(GetSECallback) {}
-  StackSafetyResults run(Function &F) const;
+  StackSafetyResults run(const Function &F) const;
 };
 
 /// StackSafetyInfo wrapper for the legacy pass manager
@@ -66,6 +73,8 @@ public:
   void getAnalysisUsage(AnalysisUsage &AU) const override;
 };
 
+ModulePass *createStackSafetyInfoWrapperPass();
+
 /// StackSafetyInfo wrapper for the new pass manager
 class StackSafetyAnalysis : public AnalysisInfoMixin<StackSafetyAnalysis> {
   static AnalysisKey Key;
@@ -77,20 +86,37 @@ public:
   Result run(Module &M, ModuleAnalysisManager &AM);
 };
 
-/// This pass performs the global stack safety analysis and annotates stack-safe
-/// allocations with !stack-safe metadata
+/// This pass performs the global (interprocedural) stack safety analysis and
+/// annotates stack-safe allocations with the !stack-safe metadata. It can
+/// can operate over a single translation unit or over ThinLTO summary
+/// information.
 class StackSafetyGlobalAnalysis : public ModulePass {
+  const ModuleSummaryIndex *ImportSummary;
+
 public:
   static char ID;
 
-  StackSafetyGlobalAnalysis();
+  StackSafetyGlobalAnalysis(const ModuleSummaryIndex *ImportSummary = nullptr);
 
   bool runOnModule(Module &M) override;
   void getAnalysisUsage(AnalysisUsage &AU) const override;
 };
 
-ModulePass *createStackSafetyInfoWrapperPass();
-ModulePass *createStackSafetyGlobalAnalysis();
+/// Run the global stack safety data flow analysis over a combined module
+/// summary index during the thin link without running local analyses or
+/// annotating metadata.
+void stackSafetyGlobalAnalysis(ModuleSummaryIndex &Index);
+
+/// When the StackSafetyGlobalAnalysis pass is initialized without a summary, it
+/// runs local analyses for every function in the current translation unit, runs
+/// the global data flow analysis over the current TU, and annotates stack-safe
+/// allocas.
+///
+/// When initialized with a Summary, the summary contains the results of the
+/// global analysis run during the thinlink so it just annotates allocas for the
+/// current TU.
+ModulePass *createStackSafetyGlobalAnalysis(
+    const ModuleSummaryIndex *ImportSummary = nullptr);
 
 } // end namespace llvm
 

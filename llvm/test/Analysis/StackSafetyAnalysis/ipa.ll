@@ -1,7 +1,66 @@
+; Test IPA over a single combined file
 ; RUN: llvm-as %s -o %t0.bc
 ; RUN: llvm-as %S/Inputs/ipa.ll -o %t1.bc
 ; RUN: llvm-link %t0.bc %t1.bc -o %t.combined.bc
-; RUN: opt -S -stack-safety %t.combined.bc | FileCheck %s
+; RUN: opt -S -stack-safety %t.combined.bc | FileCheck --check-prefixes=CHECK,WITHOUTLTO %s
+
+; Do an end-to-test using the new LTO API
+; TODO: Hideous llvm-lto2 invocation, add a --default-symbol-resolution to llvm-lto2?
+; RUN: opt -module-summary %s -o %t.summ0.bc
+; RUN: opt -module-summary %S/Inputs/ipa.ll -o %t.summ1.bc
+; RUN: llvm-lto2 run %t.summ0.bc %t.summ1.bc -o %t.lto -save-temps -thinlto-threads 1 -O0 \
+; RUN:  -r %t.summ0.bc,Write1, \
+; RUN:  -r %t.summ0.bc,Write4, \
+; RUN:  -r %t.summ0.bc,Write4_2, \
+; RUN:  -r %t.summ0.bc,Write8, \
+; RUN:  -r %t.summ0.bc,ExternalCall, \
+; RUN:  -r %t.summ0.bc,PreemptableWrite1, \
+; RUN:  -r %t.summ0.bc,InterposableWrite1, \
+; RUN:  -r %t.summ0.bc,AliasWrite1, \
+; RUN:  -r %t.summ0.bc,ReturnDependent, \
+; RUN:  -r %t.summ0.bc,Rec2, \
+; RUN:  -r %t.summ0.bc,RecursiveNoOffset, \
+; RUN:  -r %t.summ0.bc,RecursiveWithOffset, \
+; RUN:  -r %t.summ0.bc,f1,px \
+; RUN:  -r %t.summ0.bc,f2,px \
+; RUN:  -r %t.summ0.bc,f3,px \
+; RUN:  -r %t.summ0.bc,f4,px \
+; RUN:  -r %t.summ0.bc,f5,px \
+; RUN:  -r %t.summ0.bc,f6,px \
+; RUN:  -r %t.summ0.bc,PreemptableCall,px \
+; RUN:  -r %t.summ0.bc,InterposableCall,px \
+; RUN:  -r %t.summ0.bc,AliasCall,px \
+; RUN:  -r %t.summ0.bc,PrivateCall,px \
+; RUN:  -r %t.summ0.bc,f7,px \
+; RUN:  -r %t.summ0.bc,f8left,px \
+; RUN:  -r %t.summ0.bc,f8right,px \
+; RUN:  -r %t.summ0.bc,f8oobleft,px \
+; RUN:  -r %t.summ0.bc,f8oobright,px \
+; RUN:  -r %t.summ0.bc,TwoArguments,px \
+; RUN:  -r %t.summ0.bc,TwoArgumentsOOBOne,px \
+; RUN:  -r %t.summ0.bc,TwoArgumentsOOBOther,px \
+; RUN:  -r %t.summ0.bc,TwoArgumentsOOBBoth,px \
+; RUN:  -r %t.summ0.bc,TestRecursiveNoOffset,px \
+; RUN:  -r %t.summ0.bc,TestRecursiveWithOffset,px \
+; RUN:  -r %t.summ1.bc,Write1,px \
+; RUN:  -r %t.summ1.bc,Write4,px \
+; RUN:  -r %t.summ1.bc,Write4_2,px \
+; RUN:  -r %t.summ1.bc,Write8,px \
+; RUN:  -r %t.summ1.bc,ExternalCall,px \
+; RUN:  -r %t.summ1.bc,PreemptableWrite1,px \
+; RUN:  -r %t.summ1.bc,InterposableWrite1,px \
+; RUN:  -r %t.summ1.bc,AliasWrite1,px \
+; RUN:  -r %t.summ1.bc,ReturnDependent,px \
+; RUN:  -r %t.summ1.bc,Rec0,px \
+; RUN:  -r %t.summ1.bc,Rec1,px \
+; RUN:  -r %t.summ1.bc,Rec2,px \
+; RUN:  -r %t.summ1.bc,RecursiveNoOffset,px \
+; RUN:  -r %t.summ1.bc,RecursiveWithOffset,px
+
+; RUN: llvm-dis %t.lto.1.4.opt.bc -o - | FileCheck --check-prefixes=CHECK,THINLTO %s
+
+target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-linux-gnu"
 
 declare void @Write1(i8* %p)
 declare void @Write4(i8* %p)
@@ -10,10 +69,17 @@ declare void @Write8(i8* %p)
 declare dso_local void @ExternalCall(i8* %p)
 declare void @PreemptableWrite1(i8* %p)
 declare void @InterposableWrite1(i8* %p)
+declare void @AliasWrite1(i8* %p)
 declare i8* @ReturnDependent(i8* %p)
 declare void @Rec2(i8* %p)
 declare void @RecursiveNoOffset(i32* %p, i32 %size, i32* %acc)
 declare void @RecursiveWithOffset(i32 %size, i32* %acc)
+
+define private void @PrivateWrite1(i8* %p) {
+entry:
+  store i8 0, i8* %p, align 1
+  ret void
+}
 
 ; Basic out-of-bounds.
 define void @f1() {
@@ -100,10 +166,37 @@ define void @InterposableCall() {
 entry:
   %x = alloca i32, align 4
   %x1 = bitcast i32* %x to i8*
-; CHECK: %x = alloca i32, align 4{{$}}
+; ThinLTO can resolve the prevailing implementation for interposable functions.
+; WITHOUTLTO: %x = alloca i32, align 4{{$}}
+; THINLTO: %x = alloca i32, align 4, !stack-safe
   call void @InterposableWrite1(i8* %x1)
   ret void
 }
+
+; Call to an alias
+define void @AliasCall() {
+; CHECK-LABEL: define void @AliasCall
+entry:
+  %x = alloca i32, align 4
+  %x1 = bitcast i32* %x to i8*
+; TODO: We don't currently look-through aliases with ThinLTO so %x is not marked !stack-safe
+; WITHOUTLTO: %x = alloca i32, align 4, !stack-safe
+; THINLTO: %x = alloca i32, align 4{{$}}
+  call void @AliasWrite1(i8* %x1)
+  ret void
+}
+
+; Call to function with private linkage
+define void @PrivateCall() {
+; CHECK-LABEL: define void @PrivateCall
+entry:
+  %x = alloca i32, align 4
+  %x1 = bitcast i32* %x to i8*
+; CHECK: %x = alloca i32, align 4, !stack-safe
+  call void @PrivateWrite1(i8* %x1)
+  ret void
+}
+
 
 ; Caller returns a dependent value.
 ; FIXME: alloca considered unsafe even if the return value is unused.
