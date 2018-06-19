@@ -364,8 +364,7 @@ computeFunctionSummary(ModuleSummaryIndex &Index, const Module &M,
       CallGraphEdges.takeVector(), TypeTests.takeVector(),
       TypeTestAssumeVCalls.takeVector(), TypeCheckedLoadVCalls.takeVector(),
       TypeTestAssumeConstVCalls.takeVector(),
-      TypeCheckedLoadConstVCalls.takeVector(),
-      Allocas, Params);
+      TypeCheckedLoadConstVCalls.takeVector(), Allocas, Params);
   if (NonRenamableLocal)
     CantBePromoted.insert(F.getGUID());
   Index.addGlobalValueSummary(F, std::move(FuncSummary));
@@ -583,8 +582,8 @@ ModuleSummaryIndex llvm::buildModuleSummaryIndex(
 
 AnalysisKey ModuleSummaryIndexAnalysis::Key;
 
-ModuleSummaryIndex
-ModuleSummaryIndexAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
+ModuleSummaryIndex ModuleSummaryIndexAnalysis::run(Module &M,
+                                                   ModuleAnalysisManager &AM) {
   ProfileSummaryInfo &PSI = AM.getResult<ProfileSummaryAnalysis>(M);
   StackSafetyInfo &SSI = AM.getResult<StackSafetyAnalysis>(M);
   auto &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();

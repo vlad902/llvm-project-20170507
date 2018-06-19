@@ -3408,14 +3408,15 @@ static void writeFunctionTypeMetadataRecords(
     emitSignedInt64(Record, *Range.getUpper().getRawData());
   };
 
-  auto WriteCalls = [&](const std::vector<FunctionSummary::CallUseInfo> &CallUses) {
-    Record.push_back(CallUses.size());
-    for (auto &Call : CallUses) {
-      Record.push_back(Call.Callee);
-      WriteRange(Call.Range);
-      Record.push_back(Call.ParamNo);
-    }
-  };
+  auto WriteCalls =
+      [&](const std::vector<FunctionSummary::CallUseInfo> &CallUses) {
+        Record.push_back(CallUses.size());
+        for (auto &Call : CallUses) {
+          Record.push_back(Call.Callee);
+          WriteRange(Call.Range);
+          Record.push_back(Call.ParamNo);
+        }
+      };
 
   if (!FS->allocas().empty()) {
     Record.clear();

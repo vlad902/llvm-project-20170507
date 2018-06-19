@@ -13,10 +13,10 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallPtrSet.h"
-#include "llvm/ADT/StringSet.h"
-#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/BranchProbabilityInfo.h"
 #include "llvm/Analysis/InlineCost.h"
@@ -99,7 +99,7 @@ public:
 /// Return a list of all of the 'alloca' instructions in a function in a
 /// deterministic order. This is necessary to ensure that the allocas serialized
 /// to a FunctionSummary are written and read in the same order.
-std::vector<AllocaInst*> allocas(Function *F) {
+std::vector<AllocaInst *> allocas(Function *F) {
   // TODO: This happens to work, but probably by accident.
   std::vector<AllocaInst *> insts;
   for (auto &I : instructions(F))
@@ -285,7 +285,8 @@ class StackSafetyLocalAnalysis {
 
   ConstantRange OffsetFromAlloca(Value *Addr, const Value *AllocaPtr);
 
-  ConstantRange GetAccessRange(Value *Addr, const Value *AllocaPtr, uint64_t AccessSize);
+  ConstantRange GetAccessRange(Value *Addr, const Value *AllocaPtr,
+                               uint64_t AccessSize);
   ConstantRange GetMemIntrinsicAccessRange(const MemIntrinsic *MI, const Use &U,
                                            const Value *AllocaPtr);
 
@@ -302,7 +303,7 @@ public:
   // Run the transformation on the associated function.
   // Returns whether the function was changed.
   bool run(SSFunctionSummary &);
-  static uint64_t getStaticAllocaAllocationSize(const AllocaInst* AI);
+  static uint64_t getStaticAllocaAllocationSize(const AllocaInst *AI);
 };
 
 uint64_t
@@ -694,7 +695,7 @@ void StackSafetyDataFlowAnalysis::describeFunction(FunctionID ID,
 }
 
 bool StackSafetyDataFlowAnalysis::updateOneUse(SSUseSummary &US,
-                                                 bool UpdateToFullSet) {
+                                               bool UpdateToFullSet) {
   bool Changed = false;
   for (auto &CS : US.Calls) {
     ConstantRange CalleeRange = getArgumentAccessRange(CS.Callee, CS.ParamNo);
@@ -813,7 +814,7 @@ bool StackSafetyDataFlowAnalysis::addMetadata(Function &F,
 namespace llvm {
 
 StackSafetyResults StackSafetyInfo::run(const Function &F) const {
-  StackSafetyLocalAnalysis SSLA(const_cast<Function&>(F),
+  StackSafetyLocalAnalysis SSLA(const_cast<Function &>(F),
                                 F.getParent()->getDataLayout(),
                                 *GetSECallback(F));
   auto Summary = llvm::make_unique<SSFunctionSummary>();
@@ -862,7 +863,9 @@ StackSafetyInfo StackSafetyAnalysis::run(Module &M, ModuleAnalysisManager &AM) {
   });
 }
 
-StackSafetyGlobalAnalysis::StackSafetyGlobalAnalysis(const ModuleSummaryIndex *Summary) : ModulePass(ID) {
+StackSafetyGlobalAnalysis::StackSafetyGlobalAnalysis(
+    const ModuleSummaryIndex *Summary)
+    : ModulePass(ID) {
   ImportSummary = Summary;
   initializeStackSafetyGlobalAnalysisPass(*PassRegistry::getPassRegistry());
 }
@@ -899,10 +902,10 @@ bool StackSafetyGlobalAnalysis::runOnModule(Module &M) {
     if (!GVS) {
       // This function may have been promoted and renamed, get it's original
       // name and GUID.
-      StringRef OrigName = ModuleSummaryIndex::getOriginalNameBeforePromote(
-          F.getName());
-      GlobalValue::GUID GUID = GlobalValue::getGUID(
-          GlobalValue::dropLLVMManglingEscape(OrigName));
+      StringRef OrigName =
+          ModuleSummaryIndex::getOriginalNameBeforePromote(F.getName());
+      GlobalValue::GUID GUID =
+          GlobalValue::getGUID(GlobalValue::dropLLVMManglingEscape(OrigName));
       if (auto RenamedGUID = ImportSummary->getGUIDFromOriginalID(GUID))
         GUID = RenamedGUID;
 
@@ -910,8 +913,8 @@ bool StackSafetyGlobalAnalysis::runOnModule(Module &M) {
         // This function was internalized, look it up by it's unlocalized GUID
         GVS = ImportSummary->findSummaryInModule(GUID, M.getModuleIdentifier());
       } else if (F.hasAvailableExternallyLinkage() || F.hasHiddenVisibility()) {
-        // This function is located in this module due to cross-module importing,
-        // locate the definition it was imported from.
+        // This function is located in this module due to cross-module
+        // importing, locate the definition it was imported from.
         auto VI = ImportSummary->getValueInfo(GUID);
         assert(VI && !VI.getSummaryList().empty());
         for (auto &ImportedGVS : VI.getSummaryList()) {
@@ -919,7 +922,7 @@ bool StackSafetyGlobalAnalysis::runOnModule(Module &M) {
             GVS = &*ImportedGVS;
           else if (auto *AS = dyn_cast<AliasSummary>(&*ImportedGVS))
             if (isa<FunctionSummary>(AS->getAliasee()))
-              GVS = const_cast<GlobalValueSummary*>(&AS->getAliasee());
+              GVS = const_cast<GlobalValueSummary *>(&AS->getAliasee());
 
           if (GVS && GVS->isLive())
             break;
@@ -937,15 +940,16 @@ bool StackSafetyGlobalAnalysis::runOnModule(Module &M) {
     // Set the SSAllocaSummary AllocaInst pointers if the function is alive
     // (allocas for dead functions are dropped in stackSafetyGlobalAnalysis)
     if (FS->isLive()) {
-      std::vector<AllocaInst*> Allocas = allocas(&F);
+      std::vector<AllocaInst *> Allocas = allocas(&F);
       assert(Allocas.size() == FS->allocas().size() &&
              "Number of allocas differs between the function and the summary");
 
       for (unsigned I = 0, E = Allocas.size(); I < E; I++) {
         AllocaInst *AI = Allocas[I];
-        assert(Summary->Allocas[I].Size ==
-               StackSafetyLocalAnalysis::getStaticAllocaAllocationSize(AI) &&
-               "Alloca size doesn't match summary");
+        assert(
+            Summary->Allocas[I].Size ==
+                StackSafetyLocalAnalysis::getStaticAllocaAllocationSize(AI) &&
+            "Alloca size doesn't match summary");
         Summary->Allocas[I].AI = AI;
       }
     }
@@ -1004,7 +1008,8 @@ void stackSafetyGlobalAnalysis(ModuleSummaryIndex &Index) {
   }
 }
 
-ModulePass *createStackSafetyGlobalAnalysis(const ModuleSummaryIndex *ImportSummary) {
+ModulePass *
+createStackSafetyGlobalAnalysis(const ModuleSummaryIndex *ImportSummary) {
   return new StackSafetyGlobalAnalysis(ImportSummary);
 }
 

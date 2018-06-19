@@ -38,9 +38,9 @@ public:
 
   /// Generate FunctionSummary initialization parameters from the results of the
   /// function-local stack safety analysis.
-  void generateFunctionSummaryInfo(
-      std::vector<FunctionSummary::Alloca> &Allocas,
-      std::vector<FunctionSummary::LocalUse> &Params);
+  void
+  generateFunctionSummaryInfo(std::vector<FunctionSummary::Alloca> &Allocas,
+                              std::vector<FunctionSummary::LocalUse> &Params);
 
   std::unique_ptr<SSFunctionSummary> Summary;
 };
@@ -115,7 +115,8 @@ void stackSafetyGlobalAnalysis(ModuleSummaryIndex &Index);
 /// When initialized with a Summary, the summary contains the results of the
 /// global analysis run during the thinlink so it just annotates allocas for the
 /// current TU.
-ModulePass *createStackSafetyGlobalAnalysis(const ModuleSummaryIndex *ImportSummary = nullptr);
+ModulePass *createStackSafetyGlobalAnalysis(
+    const ModuleSummaryIndex *ImportSummary = nullptr);
 
 } // end namespace llvm
 

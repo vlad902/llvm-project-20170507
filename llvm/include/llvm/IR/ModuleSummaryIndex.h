@@ -524,8 +524,7 @@ public:
         std::vector<FunctionSummary::VFuncId>(),
         std::vector<FunctionSummary::VFuncId>(),
         std::vector<FunctionSummary::ConstVCall>(),
-        std::vector<FunctionSummary::ConstVCall>(),
-        std::vector<Alloca>(),
+        std::vector<FunctionSummary::ConstVCall>(), std::vector<Alloca>(),
         std::vector<LocalUse>());
   }
 
@@ -563,8 +562,7 @@ public:
                   std::vector<Alloca> Allocas, std::vector<LocalUse> Params)
       : GlobalValueSummary(FunctionKind, Flags, std::move(Refs)),
         InstCount(NumInsts), FunFlags(FunFlags),
-        CallGraphEdgeList(std::move(CGEdges)),
-        Allocas(std::move(Allocas)),
+        CallGraphEdgeList(std::move(CGEdges)), Allocas(std::move(Allocas)),
         Params(std::move(Params)) {
     if (!TypeTests.empty() || !TypeTestAssumeVCalls.empty() ||
         !TypeCheckedLoadVCalls.empty() || !TypeTestAssumeConstVCalls.empty() ||
@@ -635,21 +633,15 @@ public:
   }
 
   /// Returns the uses for every alloca in this function.
-  ArrayRef<Alloca> allocas() const {
-    return Allocas;
-  }
+  ArrayRef<Alloca> allocas() const { return Allocas; }
 
   /// Returns the uses for every parameter in this function.
-  ArrayRef<LocalUse> params() const {
-    return Params;
-  }
+  ArrayRef<LocalUse> params() const { return Params; }
 
   /// Clear the uses for parameters in this function, these values are cleared
   /// after the StackSafetyGlobalAnalysis as they are not required by the
   /// backends.
-  void clearParams() {
-    Params.clear();
-  }
+  void clearParams() { Params.clear(); }
 
   /// Set the uses for parameters in this function, these values are updated
   /// after the StackSafetyGlobalAnalysis as only some of the information is
