@@ -130,7 +130,8 @@ PlatformPOSIX::ResolveExecutable(const ModuleSpec &module_spec,
     // on the current path variables
     if (!resolved_module_spec.GetFileSpec().Exists()) {
       resolved_module_spec.GetFileSpec().GetPath(exe_path, sizeof(exe_path));
-      resolved_module_spec.GetFileSpec().SetFile(exe_path, true);
+      resolved_module_spec.GetFileSpec().SetFile(exe_path, true,
+                                                 FileSpec::Style::native);
     }
 
     if (!resolved_module_spec.GetFileSpec().Exists())
@@ -652,9 +653,10 @@ bool PlatformPOSIX::SetRemoteWorkingDirectory(const FileSpec &working_dir) {
 }
 
 bool PlatformPOSIX::GetRemoteOSVersion() {
-  if (m_remote_platform_sp)
-    return m_remote_platform_sp->GetOSVersion(
-        m_major_os_version, m_minor_os_version, m_update_os_version);
+  if (m_remote_platform_sp) {
+    m_os_version = m_remote_platform_sp->GetOSVersion();
+    return !m_os_version.empty();
+  }
   return false;
 }
 

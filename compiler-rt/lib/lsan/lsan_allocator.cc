@@ -157,6 +157,16 @@ int lsan_posix_memalign(void **memptr, uptr alignment, uptr size,
   return 0;
 }
 
+void *lsan_aligned_alloc(uptr alignment, uptr size, const StackTrace &stack) {
+  if (UNLIKELY(!CheckAlignedAllocAlignmentAndSize(alignment, size))) {
+    errno = errno_EINVAL;
+    if (AllocatorMayReturnNull())
+      return nullptr;
+    ReportInvalidAlignedAllocAlignment(size, alignment, &stack);
+  }
+  return SetErrnoOnNull(Allocate(stack, size, alignment, kAlwaysClearMemory));
+}
+
 void *lsan_memalign(uptr alignment, uptr size, const StackTrace &stack) {
   if (UNLIKELY(!IsPowerOfTwo(alignment))) {
     errno = errno_EINVAL;
@@ -186,6 +196,19 @@ void *lsan_calloc(uptr nmemb, uptr size, const StackTrace &stack) {
 void *lsan_valloc(uptr size, const StackTrace &stack) {
   return SetErrnoOnNull(
       Allocate(stack, size, GetPageSizeCached(), kAlwaysClearMemory));
+}
+
+void *lsan_pvalloc(uptr size, const StackTrace &stack) {
+  uptr PageSize = GetPageSizeCached();
+  if (UNLIKELY(CheckForPvallocOverflow(size, PageSize))) {
+    errno = errno_ENOMEM;
+    if (AllocatorMayReturnNull())
+      return nullptr;
+    ReportPvallocOverflow(size, &stack);
+  }
+  // pvalloc(0) should allocate one page.
+  size = size ? RoundUpTo(size, PageSize) : PageSize;
+  return SetErrnoOnNull(Allocate(stack, size, PageSize, kAlwaysClearMemory));
 }
 
 uptr lsan_mz_size(const void *p) {

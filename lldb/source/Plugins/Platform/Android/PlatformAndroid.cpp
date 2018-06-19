@@ -305,7 +305,7 @@ Status PlatformAndroid::DownloadSymbolFile(const lldb::ModuleSP &module_sp,
                                            const FileSpec &dst_file_spec) {
   // For oat file we can try to fetch additional debug info from the device
   ConstString extension = module_sp->GetFileSpec().GetFileNameExtension();
-  if (extension != ConstString("oat") && extension != ConstString("odex"))
+  if (extension != ConstString(".oat") && extension != ConstString(".odex"))
     return Status(
         "Symbol file downloading only supported for oat and odex files");
 
@@ -360,10 +360,8 @@ Status PlatformAndroid::DownloadSymbolFile(const lldb::ModuleSP &module_sp,
 }
 
 bool PlatformAndroid::GetRemoteOSVersion() {
-  m_major_os_version = GetSdkVersion();
-  m_minor_os_version = 0;
-  m_update_os_version = 0;
-  return m_major_os_version != 0;
+  m_os_version = llvm::VersionTuple(GetSdkVersion());
+  return !m_os_version.empty();
 }
 
 llvm::StringRef

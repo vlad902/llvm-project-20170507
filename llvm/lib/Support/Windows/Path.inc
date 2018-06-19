@@ -404,56 +404,6 @@ static std::error_code setDeleteDisposition(HANDLE Handle, bool Delete) {
   return std::error_code();
 }
 
-static std::error_code removeFD(int FD) {
-  HANDLE Handle = reinterpret_cast<HANDLE>(_get_osfhandle(FD));
-  return setDeleteDisposition(Handle, true);
-}
-
-/// In order to handle temporary files we want the following properties
-///
-/// * The temporary file is deleted on crashes
-/// * We can use (read, rename, etc) the temporary file.
-/// * We can cancel the delete to keep the file.
-///
-/// Using FILE_DISPOSITION_INFO with DeleteFile=true will create a file that is
-/// deleted on close, but it has a few problems:
-///
-/// * The file cannot be used. An attempt to open or rename the file will fail.
-///   This makes the temporary file almost useless, as it cannot be part of
-///   any other CreateFileW call in the current or in another process.
-/// * It is not atomic. A crash just after CreateFileW or just after canceling
-///   the delete will leave the file on disk.
-///
-/// Using FILE_FLAG_DELETE_ON_CLOSE solves the first issues and the first part
-/// of the second one, but there is no way to cancel it in place. What works is
-/// to create a second handle to prevent the deletion, close the first one and
-/// then clear DeleteFile with SetFileInformationByHandle. This requires
-/// changing the handle and file descriptor the caller uses.
-static std::error_code cancelDeleteOnClose(int &FD) {
-  HANDLE Handle = reinterpret_cast<HANDLE>(_get_osfhandle(FD));
-  SmallVector<wchar_t, MAX_PATH> Name;
-  if (std::error_code EC = realPathFromHandle(Handle, Name))
-    return EC;
-  HANDLE NewHandle =
-      ::CreateFileW(Name.data(), GENERIC_READ | GENERIC_WRITE | DELETE,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                    NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-  if (NewHandle == INVALID_HANDLE_VALUE)
-    return mapWindowsError(::GetLastError());
-  if (close(FD))
-    return mapWindowsError(::GetLastError());
-
-  if (std::error_code EC = setDeleteDisposition(NewHandle, false))
-    return EC;
-
-  FD = ::_open_osfhandle(intptr_t(NewHandle), 0);
-  if (FD == -1) {
-    ::CloseHandle(NewHandle);
-    return mapWindowsError(ERROR_INVALID_HANDLE);
-  }
-  return std::error_code();
-}
-
 static std::error_code rename_internal(HANDLE FromHandle, const Twine &To,
                                        bool ReplaceIfExists) {
   SmallVector<wchar_t, 0> ToWide;
@@ -826,10 +776,9 @@ std::error_code setLastModificationAndAccessTime(int FD, TimePoint<> Time) {
 
 std::error_code mapped_file_region::init(int FD, uint64_t Offset,
                                          mapmode Mode) {
-  this->FD = FD;
   this->Mode = Mode;
-  HANDLE FileHandle = reinterpret_cast<HANDLE>(_get_osfhandle(FD));
-  if (FileHandle == INVALID_HANDLE_VALUE)
+  HANDLE OrigFileHandle = reinterpret_cast<HANDLE>(_get_osfhandle(FD));
+  if (OrigFileHandle == INVALID_HANDLE_VALUE)
     return make_error_code(errc::bad_file_descriptor);
 
   DWORD flprotect;
@@ -840,7 +789,7 @@ std::error_code mapped_file_region::init(int FD, uint64_t Offset,
   }
 
   HANDLE FileMappingHandle =
-      ::CreateFileMappingW(FileHandle, 0, flprotect,
+      ::CreateFileMappingW(OrigFileHandle, 0, flprotect,
                            Hi_32(Size),
                            Lo_32(Size),
                            0);
@@ -878,9 +827,20 @@ std::error_code mapped_file_region::init(int FD, uint64_t Offset,
     Size = mbi.RegionSize;
   }
 
-  // Close all the handles except for the view. It will keep the other handles
-  // alive.
+  // Close the file mapping handle, as it's kept alive by the file mapping. But
+  // neither the file mapping nor the file mapping handle keep the file handle
+  // alive, so we need to keep a reference to the file in case all other handles
+  // are closed and the file is deleted, which may cause invalid data to be read
+  // from the file.
   ::CloseHandle(FileMappingHandle);
+  if (!::DuplicateHandle(::GetCurrentProcess(), OrigFileHandle,
+                         ::GetCurrentProcess(), &FileHandle, 0, 0,
+                         DUPLICATE_SAME_ACCESS)) {
+    std::error_code ec = mapWindowsError(GetLastError());
+    ::UnmapViewOfFile(Mapping);
+    return ec;
+  }
+
   return std::error_code();
 }
 
@@ -902,10 +862,10 @@ mapped_file_region::~mapped_file_region() {
       // flushed and subsequent process's attempts to read a file can return
       // invalid data.  Calling FlushFileBuffers on the write handle is
       // sufficient to ensure that this bug is not triggered.
-      HANDLE FileHandle = reinterpret_cast<HANDLE>(_get_osfhandle(FD));
-      if (FileHandle != INVALID_HANDLE_VALUE)
-        ::FlushFileBuffers(FileHandle);
+      ::FlushFileBuffers(FileHandle);
     }
+
+    ::CloseHandle(FileHandle);
   }
 }
 
@@ -1056,16 +1016,6 @@ static std::error_code nativeFileToFd(Expected<HANDLE> H, int &ResultFD,
   return std::error_code();
 }
 
-static DWORD nativeOpenFlags(OpenFlags Flags) {
-  DWORD Result = 0;
-  if (Flags & OF_Delete)
-    Result |= FILE_FLAG_DELETE_ON_CLOSE;
-
-  if (Result == 0)
-    Result = FILE_ATTRIBUTE_NORMAL;
-  return Result;
-}
-
 static DWORD nativeDisposition(CreationDisposition Disp, OpenFlags Flags) {
   // This is a compatibility hack.  Really we should respect the creation
   // disposition, but a lot of old code relied on the implicit assumption that
@@ -1102,16 +1052,23 @@ static DWORD nativeAccess(FileAccess Access, OpenFlags Flags) {
   return Result;
 }
 
-static Expected<file_t> nativeOpenFile(const Twine &Name, DWORD Disp,
-                                       DWORD Access, DWORD Flags) {
+static std::error_code openNativeFileInternal(const Twine &Name,
+                                              file_t &ResultFile, DWORD Disp,
+                                              DWORD Access, DWORD Flags,
+                                              bool Inherit = false) {
   SmallVector<wchar_t, 128> PathUTF16;
   if (std::error_code EC = widenPath(Name, PathUTF16))
-    return errorCodeToError(EC);
+    return EC;
+
+  SECURITY_ATTRIBUTES SA;
+  SA.nLength = sizeof(SA);
+  SA.lpSecurityDescriptor = nullptr;
+  SA.bInheritHandle = Inherit;
 
   HANDLE H =
       ::CreateFileW(PathUTF16.begin(), Access,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                    NULL, Disp, Flags, NULL);
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &SA,
+                    Disp, Flags, NULL);
   if (H == INVALID_HANDLE_VALUE) {
     DWORD LastError = ::GetLastError();
     std::error_code EC = mapWindowsError(LastError);
@@ -1119,36 +1076,63 @@ static Expected<file_t> nativeOpenFile(const Twine &Name, DWORD Disp,
     // This only runs if we failed to open the file, so there is probably
     // no performances issues.
     if (LastError != ERROR_ACCESS_DENIED)
-      return errorCodeToError(EC);
+      return EC;
     if (is_directory(Name))
-      return errorCodeToError(make_error_code(errc::is_a_directory));
-    return errorCodeToError(EC);
+      return make_error_code(errc::is_a_directory);
+    return EC;
   }
-  return H;
+  ResultFile = H;
+  return std::error_code();
 }
 
-static Expected<file_t> openFile(const Twine &Name, CreationDisposition Disp,
-                                 FileAccess Access, OpenFlags Flags) {
+Expected<file_t> openNativeFile(const Twine &Name, CreationDisposition Disp,
+                                FileAccess Access, OpenFlags Flags,
+                                unsigned Mode) {
   // Verify that we don't have both "append" and "excl".
   assert((!(Disp == CD_CreateNew) || !(Flags & OF_Append)) &&
          "Cannot specify both 'CreateNew' and 'Append' file creation flags!");
 
-  DWORD NativeFlags = nativeOpenFlags(Flags);
   DWORD NativeDisp = nativeDisposition(Disp, Flags);
   DWORD NativeAccess = nativeAccess(Access, Flags);
 
-  return nativeOpenFile(Name, NativeDisp, NativeAccess, NativeFlags);
+  bool Inherit = false;
+  if (Flags & OF_ChildInherit)
+    Inherit = true;
+
+  file_t Result;
+  std::error_code EC = openNativeFileInternal(
+      Name, Result, NativeDisp, NativeAccess, FILE_ATTRIBUTE_NORMAL, Inherit);
+  if (EC)
+    return errorCodeToError(EC);
+  if (Flags & OF_Delete) {
+    if ((EC = setDeleteDisposition(Result, true))) {
+      ::CloseHandle(Result);
+      return errorCodeToError(EC);
+    }
+  }
+  return Result;
+}
+
+std::error_code openFile(const Twine &Name, int &ResultFD,
+                         CreationDisposition Disp, FileAccess Access,
+                         OpenFlags Flags, unsigned int Mode) {
+  Expected<file_t> Result = openNativeFile(Name, Disp, Access, Flags);
+  if (!Result)
+    return errorToErrorCode(Result.takeError());
+
+  return nativeFileToFd(*Result, ResultFD, Flags);
 }
 
 static std::error_code directoryRealPath(const Twine &Name,
                                          SmallVectorImpl<char> &RealPath) {
-  Expected<file_t> EF = nativeOpenFile(Name, OPEN_EXISTING, GENERIC_READ,
-                                       FILE_FLAG_BACKUP_SEMANTICS);
-  if (!EF)
-    return errorToErrorCode(EF.takeError());
+  file_t File;
+  std::error_code EC = openNativeFileInternal(
+      Name, File, OPEN_EXISTING, GENERIC_READ, FILE_FLAG_BACKUP_SEMANTICS);
+  if (EC)
+    return EC;
 
-  std::error_code EC = realPathFromHandle(*EF, RealPath);
-  ::CloseHandle(*EF);
+  EC = realPathFromHandle(File, RealPath);
+  ::CloseHandle(File);
   return EC;
 }
 
@@ -1161,47 +1145,14 @@ std::error_code openFileForRead(const Twine &Name, int &ResultFD,
 
 Expected<file_t> openNativeFileForRead(const Twine &Name, OpenFlags Flags,
                                        SmallVectorImpl<char> *RealPath) {
-
-  Expected<file_t> Result = openFile(Name, CD_OpenExisting, FA_Read, Flags);
+  Expected<file_t> Result =
+      openNativeFile(Name, CD_OpenExisting, FA_Read, Flags);
 
   // Fetch the real name of the file, if the user asked
   if (Result && RealPath)
     realPathFromHandle(*Result, *RealPath);
 
-  return std::move(Result);
-}
-
-std::error_code openFileForWrite(const Twine &Name, int &ResultFD,
-                                 CreationDisposition Disp, OpenFlags Flags,
-                                 unsigned Mode) {
-  Expected<HANDLE> NativeFile = openNativeFileForWrite(Name, Disp, Flags, Mode);
-  if (!NativeFile)
-    return errorToErrorCode(NativeFile.takeError());
-
-  return nativeFileToFd(std::move(NativeFile), ResultFD, Flags);
-}
-
-Expected<file_t> openNativeFileForWrite(const Twine &Name,
-                                        CreationDisposition Disp,
-                                        OpenFlags Flags, unsigned Mode) {
-  return openFile(Name, Disp, FA_Write, Flags);
-}
-
-std::error_code openFileForReadWrite(const Twine &Name, int &ResultFD,
-                                     CreationDisposition Disp, OpenFlags Flags,
-                                     unsigned Mode) {
-  Expected<HANDLE> NativeFile =
-      openNativeFileForReadWrite(Name, Disp, Flags, Mode);
-  if (!NativeFile)
-    return errorToErrorCode(NativeFile.takeError());
-
-  return nativeFileToFd(std::move(NativeFile), ResultFD, Flags);
-}
-
-Expected<file_t> openNativeFileForReadWrite(const Twine &Name,
-                                            CreationDisposition Disp,
-                                            OpenFlags Flags, unsigned Mode) {
-  return openFile(Name, Disp, FA_Write | FA_Read, Flags);
+  return Result;
 }
 
 void closeFile(file_t &F) {

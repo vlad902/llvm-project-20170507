@@ -243,7 +243,7 @@ bool DYLDRendezvous::FillSOEntryFromModuleInfo(
   entry.base_addr = base_addr;
   entry.dyn_addr = dyn_addr;
 
-  entry.file_spec.SetFile(name, false);
+  entry.file_spec.SetFile(name, false, FileSpec::Style::native);
 
   UpdateBaseAddrIfNecessary(entry, name);
 
@@ -454,9 +454,8 @@ std::string DYLDRendezvous::ReadStringFromMemory(addr_t addr) {
 static bool isLoadBiasIncorrect(Target &target, const std::string &file_path) {
   // On Android L (API 21, 22) the load address of the "/system/bin/linker"
   // isn't filled in correctly.
-  uint32_t os_major = 0, os_minor = 0, os_update = 0;
+  unsigned os_major = target.GetPlatform()->GetOSVersion().getMajor();
   if (target.GetArchitecture().GetTriple().isAndroid() &&
-      target.GetPlatform()->GetOSVersion(os_major, os_minor, os_update) &&
       (os_major == 21 || os_major == 22) &&
       (file_path == "/system/bin/linker" ||
        file_path == "/system/bin/linker64")) {
@@ -518,7 +517,7 @@ bool DYLDRendezvous::ReadSOEntryFromMemory(lldb::addr_t addr, SOEntry &entry) {
     return false;
 
   std::string file_path = ReadStringFromMemory(entry.path_addr);
-  entry.file_spec.SetFile(file_path, false);
+  entry.file_spec.SetFile(file_path, false, FileSpec::Style::native);
 
   UpdateBaseAddrIfNecessary(entry, file_path);
 

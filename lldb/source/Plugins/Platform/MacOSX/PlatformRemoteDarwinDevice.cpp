@@ -31,12 +31,10 @@ using namespace lldb_private;
 
 PlatformRemoteDarwinDevice::SDKDirectoryInfo::SDKDirectoryInfo(
     const lldb_private::FileSpec &sdk_dir)
-    : directory(sdk_dir), build(), version_major(0), version_minor(0),
-      version_update(0), user_cached(false) {
+    : directory(sdk_dir), build(), user_cached(false) {
   llvm::StringRef dirname_str = sdk_dir.GetFilename().GetStringRef();
   llvm::StringRef build_str;
-  std::tie(version_major, version_minor, version_update, build_str) =
-      ParseVersionBuildDir(dirname_str);
+  std::tie(version, build_str) = ParseVersionBuildDir(dirname_str);
   build.SetString(build_str);
 }
 
@@ -255,24 +253,23 @@ PlatformRemoteDarwinDevice::GetSDKDirectoryForCurrentOSVersion() {
 
     // If we are connected we can find the version of the OS the platform us
     // running on and select the right SDK
-    uint32_t major, minor, update;
-    if (GetOSVersion(major, minor, update)) {
+    llvm::VersionTuple version = GetOSVersion();
+    if (!version.empty()) {
       if (UpdateSDKDirectoryInfosIfNeeded()) {
         // First try for an exact match of major, minor and update
         for (i = 0; i < num_sdk_infos; ++i) {
           if (check_sdk_info[i]) {
-            if (m_sdk_directory_infos[i].version_major == major &&
-                m_sdk_directory_infos[i].version_minor == minor &&
-                m_sdk_directory_infos[i].version_update == update) {
+            if (m_sdk_directory_infos[i].version == version)
               return &m_sdk_directory_infos[i];
-            }
           }
         }
         // First try for an exact match of major and minor
         for (i = 0; i < num_sdk_infos; ++i) {
           if (check_sdk_info[i]) {
-            if (m_sdk_directory_infos[i].version_major == major &&
-                m_sdk_directory_infos[i].version_minor == minor) {
+            if (m_sdk_directory_infos[i].version.getMajor() ==
+                    version.getMajor() &&
+                m_sdk_directory_infos[i].version.getMinor() ==
+                    version.getMinor()) {
               return &m_sdk_directory_infos[i];
             }
           }
@@ -280,7 +277,8 @@ PlatformRemoteDarwinDevice::GetSDKDirectoryForCurrentOSVersion() {
         // Lastly try to match of major version only..
         for (i = 0; i < num_sdk_infos; ++i) {
           if (check_sdk_info[i]) {
-            if (m_sdk_directory_infos[i].version_major == major) {
+            if (m_sdk_directory_infos[i].version.getMajor() ==
+                version.getMajor()) {
               return &m_sdk_directory_infos[i];
             }
           }
@@ -300,25 +298,13 @@ const PlatformRemoteDarwinDevice::SDKDirectoryInfo *
 PlatformRemoteDarwinDevice::GetSDKDirectoryForLatestOSVersion() {
   const PlatformRemoteDarwinDevice::SDKDirectoryInfo *result = NULL;
   if (UpdateSDKDirectoryInfosIfNeeded()) {
-    const uint32_t num_sdk_infos = m_sdk_directory_infos.size();
-    // First try for an exact match of major, minor and update
-    for (uint32_t i = 0; i < num_sdk_infos; ++i) {
-      const SDKDirectoryInfo &sdk_dir_info = m_sdk_directory_infos[i];
-      if (sdk_dir_info.version_major != UINT32_MAX) {
-        if (result == NULL ||
-            sdk_dir_info.version_major > result->version_major) {
-          result = &sdk_dir_info;
-        } else if (sdk_dir_info.version_major == result->version_major) {
-          if (sdk_dir_info.version_minor > result->version_minor) {
-            result = &sdk_dir_info;
-          } else if (sdk_dir_info.version_minor == result->version_minor) {
-            if (sdk_dir_info.version_update > result->version_update) {
-              result = &sdk_dir_info;
-            }
-          }
-        }
-      }
-    }
+    auto max = std::max_element(
+        m_sdk_directory_infos.begin(), m_sdk_directory_infos.end(),
+        [](const SDKDirectoryInfo &a, const SDKDirectoryInfo &b) {
+          return a.version < b.version;
+        });
+    if (max != m_sdk_directory_infos.end())
+      result = &*max;
   }
   return result;
 }
@@ -409,7 +395,7 @@ bool PlatformRemoteDarwinDevice::GetFileInSDK(const char *platform_file_path,
 
       const char *paths_to_try[] = {"Symbols", "", "Symbols.Internal", nullptr};
       for (size_t i = 0; paths_to_try[i] != nullptr; i++) {
-        local_file.SetFile(sdkroot_path, false);
+        local_file.SetFile(sdkroot_path, false, FileSpec::Style::native);
         if (paths_to_try[i][0] != '\0')
           local_file.AppendPathComponent(paths_to_try[i]);
         local_file.AppendPathComponent(platform_file_path);
@@ -442,7 +428,7 @@ Status PlatformRemoteDarwinDevice::GetSymbolFile(const FileSpec &platform_file,
       ::snprintf(resolved_path, sizeof(resolved_path), "%s/%s", os_version_dir,
                  platform_file_path);
 
-      local_file.SetFile(resolved_path, true);
+      local_file.SetFile(resolved_path, true, FileSpec::Style::native);
       if (local_file.Exists()) {
         if (log) {
           log->Printf("Found a copy of %s in the DeviceSupport dir %s",
@@ -454,7 +440,7 @@ Status PlatformRemoteDarwinDevice::GetSymbolFile(const FileSpec &platform_file,
       ::snprintf(resolved_path, sizeof(resolved_path), "%s/Symbols.Internal/%s",
                  os_version_dir, platform_file_path);
 
-      local_file.SetFile(resolved_path, true);
+      local_file.SetFile(resolved_path, true, FileSpec::Style::native);
       if (local_file.Exists()) {
         if (log) {
           log->Printf(
@@ -466,7 +452,7 @@ Status PlatformRemoteDarwinDevice::GetSymbolFile(const FileSpec &platform_file,
       ::snprintf(resolved_path, sizeof(resolved_path), "%s/Symbols/%s",
                  os_version_dir, platform_file_path);
 
-      local_file.SetFile(resolved_path, true);
+      local_file.SetFile(resolved_path, true, FileSpec::Style::native);
       if (local_file.Exists()) {
         if (log) {
           log->Printf("Found a copy of %s in the DeviceSupport dir %s/Symbols",

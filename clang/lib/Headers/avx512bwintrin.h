@@ -1080,21 +1080,23 @@ _mm512_maskz_cvtusepi16_epi8 (__mmask32 __M, __m512i __A) {
 
 static __inline__ __m256i __DEFAULT_FN_ATTRS
 _mm512_cvtepi16_epi8 (__m512i __A) {
-  return (__m256i)__builtin_convertvector((__v32hi)__A, __v32qi);
+  return (__m256i) __builtin_ia32_pmovwb512_mask ((__v32hi) __A,
+              (__v32qi) _mm256_undefined_si256(),
+              (__mmask32) -1);
 }
 
 static __inline__ __m256i __DEFAULT_FN_ATTRS
 _mm512_mask_cvtepi16_epi8 (__m256i __O, __mmask32 __M, __m512i __A) {
-  return (__m256i)__builtin_ia32_selectb_256((__mmask32)__M,
-                                             (__v32qi)_mm512_cvtepi16_epi8(__A),
-                                             (__v32qi)__O);
+  return (__m256i) __builtin_ia32_pmovwb512_mask ((__v32hi) __A,
+              (__v32qi) __O,
+              __M);
 }
 
 static __inline__ __m256i __DEFAULT_FN_ATTRS
 _mm512_maskz_cvtepi16_epi8 (__mmask32 __M, __m512i __A) {
-  return (__m256i)__builtin_ia32_selectb_256((__mmask32)__M,
-                                             (__v32qi)_mm512_cvtepi16_epi8(__A),
-                                             (__v32qi)_mm256_setzero_si256());
+  return (__m256i) __builtin_ia32_pmovwb512_mask ((__v32hi) __A,
+              (__v32qi) _mm256_setzero_si256(),
+              __M);
 }
 
 static __inline__ void __DEFAULT_FN_ATTRS
@@ -1287,28 +1289,7 @@ _mm512_maskz_cvtepu8_epi16(__mmask32 __U, __m256i __A)
 
 
 #define _mm512_shufflehi_epi16(A, imm) \
-  (__m512i)__builtin_shufflevector((__v32hi)(__m512i)(A), \
-                                   (__v32hi)_mm512_undefined_epi32(), \
-                                   0, 1, 2, 3, \
-                                   4  + (((imm) >> 0) & 0x3), \
-                                   4  + (((imm) >> 2) & 0x3), \
-                                   4  + (((imm) >> 4) & 0x3), \
-                                   4  + (((imm) >> 6) & 0x3), \
-                                   8, 9, 10, 11, \
-                                   12 + (((imm) >> 0) & 0x3), \
-                                   12 + (((imm) >> 2) & 0x3), \
-                                   12 + (((imm) >> 4) & 0x3), \
-                                   12 + (((imm) >> 6) & 0x3), \
-                                   16, 17, 18, 19, \
-                                   20 + (((imm) >> 0) & 0x3), \
-                                   20 + (((imm) >> 2) & 0x3), \
-                                   20 + (((imm) >> 4) & 0x3), \
-                                   20 + (((imm) >> 6) & 0x3), \
-                                   24, 25, 26, 27, \
-                                   28 + (((imm) >> 0) & 0x3), \
-                                   28 + (((imm) >> 2) & 0x3), \
-                                   28 + (((imm) >> 4) & 0x3), \
-                                   28 + (((imm) >> 6) & 0x3))
+  (__m512i)__builtin_ia32_pshufhw512((__v32hi)(__m512i)(A), (int)(imm))
 
 #define _mm512_mask_shufflehi_epi16(W, U, A, imm) \
   (__m512i)__builtin_ia32_selectw_512((__mmask32)(U), \
@@ -1323,28 +1304,7 @@ _mm512_maskz_cvtepu8_epi16(__mmask32 __U, __m256i __A)
                                       (__v32hi)_mm512_setzero_si512())
 
 #define _mm512_shufflelo_epi16(A, imm) \
-  (__m512i)__builtin_shufflevector((__v32hi)(__m512i)(A), \
-                                   (__v32hi)_mm512_undefined_epi32(), \
-                                   0 + (((imm) >> 0) & 0x3), \
-                                   0 + (((imm) >> 2) & 0x3), \
-                                   0 + (((imm) >> 4) & 0x3), \
-                                   0 + (((imm) >> 6) & 0x3), \
-                                   4, 5, 6, 7, \
-                                   8 + (((imm) >> 0) & 0x3), \
-                                   8 + (((imm) >> 2) & 0x3), \
-                                   8 + (((imm) >> 4) & 0x3), \
-                                   8 + (((imm) >> 6) & 0x3), \
-                                   12, 13, 14, 15, \
-                                   16 + (((imm) >> 0) & 0x3), \
-                                   16 + (((imm) >> 2) & 0x3), \
-                                   16 + (((imm) >> 4) & 0x3), \
-                                   16 + (((imm) >> 6) & 0x3), \
-                                   20, 21, 22, 23, \
-                                   24 + (((imm) >> 0) & 0x3), \
-                                   24 + (((imm) >> 2) & 0x3), \
-                                   24 + (((imm) >> 4) & 0x3), \
-                                   24 + (((imm) >> 6) & 0x3), \
-                                   28, 29, 30, 31)
+  (__m512i)__builtin_ia32_pshuflw512((__v32hi)(__m512i)(A), (int)(imm))
 
 
 #define _mm512_mask_shufflelo_epi16(W, U, A, imm) \
@@ -1427,7 +1387,7 @@ _mm512_maskz_slli_epi16(__mmask32 __U, __m512i __A, int __B)
 }
 
 #define _mm512_bslli_epi128(a, imm) \
-  (__m512i)__builtin_ia32_pslldqi512((__v8di)(__m512i)(a), (int)(imm) * 8)
+  (__m512i)__builtin_ia32_pslldqi512_byteshift((__v8di)(__m512i)(a), (int)(imm))
 
 static __inline__ __m512i __DEFAULT_FN_ATTRS
 _mm512_srlv_epi16(__m512i __A, __m512i __B)
@@ -1562,7 +1522,7 @@ _mm512_maskz_srli_epi16(__mmask32 __U, __m512i __A, int __B)
 }
 
 #define _mm512_bsrli_epi128(a, imm) \
-  (__m512i)__builtin_ia32_psrldqi512((__v8di)(__m512i)(a), (int)(imm) * 8)
+  (__m512i)__builtin_ia32_psrldqi512_byteshift((__v8di)(__m512i)(a), (int)(imm))
 
 static __inline__ __m512i __DEFAULT_FN_ATTRS
 _mm512_mask_mov_epi16 (__m512i __W, __mmask32 __U, __m512i __A)
@@ -1859,22 +1819,18 @@ _mm512_mask_permutexvar_epi16 (__m512i __W, __mmask32 __M, __m512i __A,
                               (__v64qi)(__m512i)_mm512_setzero_si512())
 
 #define _mm512_dbsad_epu8(A, B, imm) \
-  (__m512i)__builtin_ia32_dbpsadbw512_mask((__v64qi)(__m512i)(A), \
-                                           (__v64qi)(__m512i)(B), (int)(imm), \
-                                           (__v32hi)_mm512_undefined_epi32(), \
-                                           (__mmask32)-1)
+  (__m512i)__builtin_ia32_dbpsadbw512((__v64qi)(__m512i)(A), \
+                                      (__v64qi)(__m512i)(B), (int)(imm))
 
 #define _mm512_mask_dbsad_epu8(W, U, A, B, imm) \
-  (__m512i)__builtin_ia32_dbpsadbw512_mask((__v64qi)(__m512i)(A), \
-                                           (__v64qi)(__m512i)(B), (int)(imm), \
-                                           (__v32hi)(__m512i)(W), \
-                                           (__mmask32)(U))
+  (__m512i)__builtin_ia32_selectw_512((__mmask32)(U), \
+                                  (__v32hi)_mm512_dbsad_epu8((A), (B), (imm)), \
+                                  (__v32hi)(__m512i)(W))
 
 #define _mm512_maskz_dbsad_epu8(U, A, B, imm) \
-  (__m512i)__builtin_ia32_dbpsadbw512_mask((__v64qi)(__m512i)(A), \
-                                           (__v64qi)(__m512i)(B), (int)(imm), \
-                                           (__v32hi)_mm512_setzero_si512(), \
-                                           (__mmask32)(U))
+  (__m512i)__builtin_ia32_selectw_512((__mmask32)(U), \
+                                  (__v32hi)_mm512_dbsad_epu8((A), (B), (imm)), \
+                                  (__v32hi)_mm512_setzero_si512())
 
 static __inline__ __m512i __DEFAULT_FN_ATTRS
 _mm512_sad_epu8 (__m512i __A, __m512i __B)

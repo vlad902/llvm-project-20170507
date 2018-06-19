@@ -521,7 +521,7 @@ static void expandTildeExpr(SmallVectorImpl<char> &Path) {
 }
 
 static std::error_code fillStatus(int StatRet, const struct stat &Status,
-                             file_status &Result) {
+                                  file_status &Result) {
   if (StatRet != 0) {
     std::error_code ec(errno, std::generic_category());
     if (ec == errc::no_such_file_or_directory)
@@ -634,8 +634,7 @@ std::error_code mapped_file_region::init(int FD, uint64_t Offset,
 
 mapped_file_region::mapped_file_region(int fd, mapmode mode, size_t length,
                                        uint64_t offset, std::error_code &ec)
-    : Size(length), Mapping(), FD(fd), Mode(mode) {
-  (void)FD;
+    : Size(length), Mapping(), Mode(mode) {
   (void)Mode;
   ec = init(fd, offset, mode);
   if (ec)
@@ -753,28 +752,42 @@ static int nativeOpenFlags(CreationDisposition Disp, OpenFlags Flags,
     Result |= O_APPEND;
 
 #ifdef O_CLOEXEC
-  Result |= O_CLOEXEC;
+  if (!(Flags & OF_ChildInherit))
+    Result |= O_CLOEXEC;
 #endif
 
   return Result;
 }
 
-static std::error_code openFile(const Twine &Name, int &ResultFD,
-                                CreationDisposition Disp, FileAccess Access,
-                                OpenFlags Flags, unsigned Mode) {
+std::error_code openFile(const Twine &Name, int &ResultFD,
+                         CreationDisposition Disp, FileAccess Access,
+                         OpenFlags Flags, unsigned Mode) {
   int OpenFlags = nativeOpenFlags(Disp, Flags, Access);
 
   SmallString<128> Storage;
   StringRef P = Name.toNullTerminatedStringRef(Storage);
-  if ((ResultFD = sys::RetryAfterSignal(-1, open, P.begin(), OpenFlags, Mode)) <
+  if ((ResultFD = sys::RetryAfterSignal(-1, ::open, P.begin(), OpenFlags, Mode)) <
       0)
     return std::error_code(errno, std::generic_category());
 #ifndef O_CLOEXEC
-  int r = fcntl(ResultFD, F_SETFD, FD_CLOEXEC);
-  (void)r;
-  assert(r == 0 && "fcntl(F_SETFD, FD_CLOEXEC) failed");
+  if (!(Flags & OF_ChildInherit)) {
+    int r = fcntl(ResultFD, F_SETFD, FD_CLOEXEC);
+    (void)r;
+    assert(r == 0 && "fcntl(F_SETFD, FD_CLOEXEC) failed");
+  }
 #endif
   return std::error_code();
+}
+
+Expected<int> openNativeFile(const Twine &Name, CreationDisposition Disp,
+                             FileAccess Access, OpenFlags Flags,
+                             unsigned Mode) {
+
+  int FD;
+  std::error_code EC = openFile(Name, FD, Disp, Access, Flags, Mode);
+  if (EC)
+    return errorCodeToError(EC);
+  return FD;
 }
 
 std::error_code openFileForRead(const Twine &Name, int &ResultFD,
@@ -819,38 +832,6 @@ Expected<file_t> openNativeFileForRead(const Twine &Name, OpenFlags Flags,
                                        SmallVectorImpl<char> *RealPath) {
   file_t ResultFD;
   std::error_code EC = openFileForRead(Name, ResultFD, Flags, RealPath);
-  if (EC)
-    return errorCodeToError(EC);
-  return ResultFD;
-}
-
-std::error_code openFileForWrite(const Twine &Name, int &ResultFD,
-                                 CreationDisposition Disp, OpenFlags Flags,
-                                 unsigned Mode) {
-  return openFile(Name, ResultFD, Disp, FA_Write, Flags, Mode);
-}
-
-Expected<file_t> openNativeFileForWrite(const Twine &Name,
-                                        CreationDisposition Disp,
-                                        OpenFlags Flags, unsigned Mode) {
-  file_t ResultFD;
-  std::error_code EC = openFileForWrite(Name, ResultFD, Disp, Flags, Mode);
-  if (EC)
-    return errorCodeToError(EC);
-  return ResultFD;
-}
-
-std::error_code openFileForReadWrite(const Twine &Name, int &ResultFD,
-                                     CreationDisposition Disp, OpenFlags Flags,
-                                     unsigned Mode) {
-  return openFile(Name, ResultFD, Disp, FA_Read | FA_Write, Flags, Mode);
-}
-
-Expected<file_t> openNativeFileForReadWrite(const Twine &Name,
-                                            CreationDisposition Disp,
-                                            OpenFlags Flags, unsigned Mode) {
-  file_t ResultFD;
-  std::error_code EC = openFileForReadWrite(Name, ResultFD, Disp, Flags, Mode);
   if (EC)
     return errorCodeToError(EC);
   return ResultFD;

@@ -7,8 +7,10 @@
 //
 //===---------------------------------------------------------------------===//
 #include "Quality.h"
+#include "URI.h"
 #include "index/Index.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/Basic/CharInfo.h"
 #include "clang/AST/DeclVisitor.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Sema/CodeCompleteConsumer.h"
@@ -19,6 +21,11 @@
 namespace clang {
 namespace clangd {
 using namespace llvm;
+static bool IsReserved(StringRef Name) {
+  // FIXME: Should we exclude _Bool and others recognized by the standard?
+  return Name.size() >= 2 && Name[0] == '_' &&
+         (isUppercase(Name[1]) || Name[1] == '_');
+}
 
 static bool hasDeclInMainFile(const Decl &D) {
   auto &SourceMgr = D.getASTContext().getSourceManager();
@@ -51,6 +58,29 @@ static SymbolQualitySignals::SymbolCategory categorize(const NamedDecl &ND) {
 #undef MAP
   };
   return Switch().Visit(&ND);
+}
+
+static SymbolQualitySignals::SymbolCategory categorize(const CodeCompletionResult &R) {
+  if (R.Declaration)
+    return categorize(*R.Declaration);
+  if (R.Kind == CodeCompletionResult::RK_Macro)
+    return SymbolQualitySignals::Macro;
+  // Everything else is a keyword or a pattern. Patterns are mostly keywords
+  // too, except a few which we recognize by cursor kind.
+  switch (R.CursorKind) {
+    case CXCursor_CXXMethod:
+      return SymbolQualitySignals::Function;
+    case CXCursor_ModuleImportDecl:
+      return SymbolQualitySignals::Namespace;
+    case CXCursor_MacroDefinition:
+      return SymbolQualitySignals::Macro;
+    case CXCursor_TypeRef:
+      return SymbolQualitySignals::Type;
+    case CXCursor_MemberRef:
+      return SymbolQualitySignals::Variable;
+    default:
+      return SymbolQualitySignals::Keyword;
+  }
 }
 
 static SymbolQualitySignals::SymbolCategory
@@ -97,15 +127,19 @@ void SymbolQualitySignals::merge(const CodeCompletionResult &SemaCCResult) {
   if (SemaCCResult.Availability == CXAvailability_Deprecated)
     Deprecated = true;
 
-  if (SemaCCResult.Declaration)
-    Category = categorize(*SemaCCResult.Declaration);
-  else if (SemaCCResult.Kind == CodeCompletionResult::RK_Macro)
-    Category = Macro;
+  Category = categorize(SemaCCResult);
+
+  if (SemaCCResult.Declaration) {
+    if (auto *ID = SemaCCResult.Declaration->getIdentifier())
+      ReservedName = ReservedName || IsReserved(ID->getName());
+  } else if (SemaCCResult.Kind == CodeCompletionResult::RK_Macro)
+    ReservedName = ReservedName || IsReserved(SemaCCResult.Macro->getName());
 }
 
 void SymbolQualitySignals::merge(const Symbol &IndexResult) {
   References = std::max(IndexResult.References, References);
   Category = categorize(IndexResult.SymInfo);
+  ReservedName = ReservedName || IsReserved(IndexResult.Name);
 }
 
 float SymbolQualitySignals::evaluate() const {
@@ -118,8 +152,13 @@ float SymbolQualitySignals::evaluate() const {
 
   if (Deprecated)
     Score *= 0.1f;
+  if (ReservedName)
+    Score *= 0.1f;
 
   switch (Category) {
+    case Keyword:  // Usually relevant, but misses most signals.
+      Score *= 10;
+      break;
     case Type:
     case Function:
     case Variable:
@@ -142,7 +181,62 @@ raw_ostream &operator<<(raw_ostream &OS, const SymbolQualitySignals &S) {
   OS << formatv("=== Symbol quality: {0}\n", S.evaluate());
   OS << formatv("\tReferences: {0}\n", S.References);
   OS << formatv("\tDeprecated: {0}\n", S.Deprecated);
+  OS << formatv("\tReserved name: {0}\n", S.ReservedName);
   OS << formatv("\tCategory: {0}\n", static_cast<int>(S.Category));
+  return OS;
+}
+
+/// Calculates a proximity score from \p From and \p To, which are URI strings
+/// that have the same scheme. This does not parse URI. A URI (sans "<scheme>:")
+/// is split into chunks by '/' and each chunk is considered a file/directory.
+/// For example, "uri:///a/b/c" will be treated as /a/b/c
+static float uriProximity(StringRef From, StringRef To) {
+  auto SchemeSplitFrom = From.split(':');
+  auto SchemeSplitTo = To.split(':');
+  assert((SchemeSplitFrom.first == SchemeSplitTo.first) &&
+         "URIs must have the same scheme in order to compute proximity.");
+  auto Split = [](StringRef URIWithoutScheme) {
+    SmallVector<StringRef, 8> Split;
+    URIWithoutScheme.split(Split, '/', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+    return Split;
+  };
+  SmallVector<StringRef, 8> Fs = Split(SchemeSplitFrom.second);
+  SmallVector<StringRef, 8> Ts = Split(SchemeSplitTo.second);
+  auto F = Fs.begin(), T = Ts.begin(), FE = Fs.end(), TE = Ts.end();
+  for (; F != FE && T != TE && *F == *T; ++F, ++T) {
+  }
+  // We penalize for traversing up and down from \p From to \p To but penalize
+  // less for traversing down because subprojects are more closely related than
+  // superprojects.
+  int UpDist = FE - F;
+  int DownDist = TE - T;
+  return std::pow(0.7, UpDist + DownDist/2);
+}
+
+FileProximityMatcher::FileProximityMatcher(ArrayRef<StringRef> ProximityPaths)
+    : ProximityPaths(ProximityPaths.begin(), ProximityPaths.end()) {}
+
+float FileProximityMatcher::uriProximity(StringRef SymbolURI) const {
+  float Score = 0;
+  if (!ProximityPaths.empty() && !SymbolURI.empty()) {
+    for (const auto &Path : ProximityPaths)
+      // Only calculate proximity score for two URIs with the same scheme so
+      // that the computation can be purely text-based and thus avoid expensive
+      // URI encoding/decoding.
+      if (auto U = URI::create(Path, SymbolURI.split(':').first)) {
+        Score = std::max(Score, clangd::uriProximity(U->toString(), SymbolURI));
+      } else {
+        llvm::consumeError(U.takeError());
+      }
+  }
+  return Score;
+}
+
+llvm::raw_ostream &operator<<(llvm::raw_ostream &OS,
+                              const FileProximityMatcher &M) {
+  OS << formatv("File proximity matcher: ");
+  OS << formatv("ProximityPaths{{0}}", llvm::join(M.ProximityPaths.begin(),
+                                                  M.ProximityPaths.end(), ","));
   return OS;
 }
 
@@ -166,6 +260,8 @@ ComputeScope(const NamedDecl &D) {
 void SymbolRelevanceSignals::merge(const Symbol &IndexResult) {
   // FIXME: Index results always assumed to be at global scope. If Scope becomes
   // relevant to non-completion requests, we should recognize class members etc.
+
+  SymbolURI = IndexResult.CanonicalDeclaration.FileURI;
 }
 
 void SymbolRelevanceSignals::merge(const CodeCompletionResult &SemaCCResult) {
@@ -174,11 +270,12 @@ void SymbolRelevanceSignals::merge(const CodeCompletionResult &SemaCCResult) {
     Forbidden = true;
 
   if (SemaCCResult.Declaration) {
-    // We boost things that have decls in the main file.
-    // The real proximity scores would be more general when we have them.
+    // We boost things that have decls in the main file. We give a fixed score
+    // for all other declarations in sema as they are already included in the
+    // translation unit.
     float DeclProximity =
-        hasDeclInMainFile(*SemaCCResult.Declaration) ? 1.0 : 0.0;
-    ProximityScore = std::max(DeclProximity, ProximityScore);
+        hasDeclInMainFile(*SemaCCResult.Declaration) ? 1.0 : 0.6;
+    SemaProximityScore = std::max(DeclProximity, SemaProximityScore);
   }
 
   // Declarations are scoped, others (like macros) are assumed global.
@@ -194,9 +291,11 @@ float SymbolRelevanceSignals::evaluate() const {
 
   Score *= NameMatch;
 
+  float IndexProximityScore =
+      FileProximityMatch ? FileProximityMatch->uriProximity(SymbolURI) : 0;
   // Proximity scores are [0,1] and we translate them into a multiplier in the
   // range from 1 to 2.
-  Score *= 1 + ProximityScore;
+  Score *= 1 + std::max(IndexProximityScore, SemaProximityScore);
 
   // Symbols like local variables may only be referenced within their scope.
   // Conversely if we're in that scope, it's likely we'll reference them.
@@ -220,11 +319,18 @@ float SymbolRelevanceSignals::evaluate() const {
 
   return Score;
 }
+
 raw_ostream &operator<<(raw_ostream &OS, const SymbolRelevanceSignals &S) {
   OS << formatv("=== Symbol relevance: {0}\n", S.evaluate());
   OS << formatv("\tName match: {0}\n", S.NameMatch);
   OS << formatv("\tForbidden: {0}\n", S.Forbidden);
-  OS << formatv("\tProximity: {0}\n", S.ProximityScore);
+  OS << formatv("\tSymbol URI: {0}\n", S.SymbolURI);
+  if (S.FileProximityMatch) {
+    OS << formatv("\tIndex proximity: {0}\n",
+                  S.FileProximityMatch->uriProximity(S.SymbolURI))
+       << " (" << *S.FileProximityMatch << ")\n";
+  }
+  OS << formatv("\tSema proximity: {0}\n", S.SemaProximityScore);
   OS << formatv("\tQuery type: {0}\n", static_cast<int>(S.Query));
   OS << formatv("\tScope: {0}\n", static_cast<int>(S.Scope));
   return OS;

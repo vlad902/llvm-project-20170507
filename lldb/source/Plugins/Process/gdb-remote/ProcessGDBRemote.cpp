@@ -824,11 +824,14 @@ Status ProcessGDBRemote::DoLaunch(Module *exe_module,
       if (disable_stdio) {
         // set to /dev/null unless redirected to a file above
         if (!stdin_file_spec)
-          stdin_file_spec.SetFile(FileSystem::DEV_NULL, false);
+          stdin_file_spec.SetFile(FileSystem::DEV_NULL, false,
+                                  FileSpec::Style::native);
         if (!stdout_file_spec)
-          stdout_file_spec.SetFile(FileSystem::DEV_NULL, false);
+          stdout_file_spec.SetFile(FileSystem::DEV_NULL, false,
+                                   FileSpec::Style::native);
         if (!stderr_file_spec)
-          stderr_file_spec.SetFile(FileSystem::DEV_NULL, false);
+          stderr_file_spec.SetFile(FileSystem::DEV_NULL, false,
+                                   FileSpec::Style::native);
       } else if (platform_sp && platform_sp->IsHost()) {
         // If the debugserver is local and we aren't disabling STDIO, lets use
         // a pseudo terminal to instead of relying on the 'O' packets for stdio
@@ -4238,13 +4241,8 @@ void ProcessGDBRemote::PrefetchModuleSpecs(
   }
 }
 
-bool ProcessGDBRemote::GetHostOSVersion(uint32_t &major, uint32_t &minor,
-                                        uint32_t &update) {
-  if (m_gdb_comm.GetOSVersion(major, minor, update))
-    return true;
-  // We failed to get the host OS version, defer to the base implementation to
-  // correctly invalidate the arguments.
-  return Process::GetHostOSVersion(major, minor, update);
+llvm::VersionTuple ProcessGDBRemote::GetHostOSVersion() {
+  return m_gdb_comm.GetOSVersion();
 }
 
 namespace {

@@ -122,7 +122,7 @@ INTERCEPTOR(void *, __libc_memalign, uptr alignment, uptr size) {
 INTERCEPTOR(void*, aligned_alloc, uptr alignment, uptr size) {
   ENSURE_LSAN_INITED;
   GET_STACK_TRACE_MALLOC;
-  return lsan_memalign(alignment, size, stack);
+  return lsan_aligned_alloc(alignment, size, stack);
 }
 #define LSAN_MAYBE_INTERCEPT_ALIGNED_ALLOC INTERCEPT_FUNCTION(aligned_alloc)
 #else
@@ -165,13 +165,7 @@ INTERCEPTOR(int, mallopt, int cmd, int value) {
 INTERCEPTOR(void*, pvalloc, uptr size) {
   ENSURE_LSAN_INITED;
   GET_STACK_TRACE_MALLOC;
-  uptr PageSize = GetPageSizeCached();
-  size = RoundUpTo(size, PageSize);
-  if (size == 0) {
-    // pvalloc(0) should allocate one page.
-    size = PageSize;
-  }
-  return Allocate(stack, size, GetPageSizeCached(), kAlwaysClearMemory);
+  return lsan_pvalloc(size, stack);
 }
 #define LSAN_MAYBE_INTERCEPT_PVALLOC INTERCEPT_FUNCTION(pvalloc)
 #else

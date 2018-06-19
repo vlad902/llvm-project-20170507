@@ -54,6 +54,7 @@
 #include "lldb/lldb-private.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/Support/VersionTuple.h"
 
 namespace lldb_private {
 
@@ -318,7 +319,8 @@ public:
                            NameMatch process_name_match_type)
       : m_match_info(), m_name_match_type(process_name_match_type),
         m_match_all_users(false) {
-    m_match_info.GetExecutableFile().SetFile(process_name, false);
+    m_match_info.GetExecutableFile().SetFile(process_name, false,
+                                             FileSpec::Style::native);
   }
 
   ProcessInstanceInfo &GetProcessInfo() { return m_match_info; }
@@ -1446,26 +1448,11 @@ public:
   /// platform that might itself be running natively, but have different
   /// heuristics for figuring out which OS is is emulating.
   ///
-  /// @param[out] major
-  ///    The major OS version, or UINT32_MAX if it can't be determined
-  ///
-  /// @param[out] minor
-  ///    The minor OS version, or UINT32_MAX if it can't be determined
-  ///
-  /// @param[out] update
-  ///    The update OS version, or UINT32_MAX if it can't be determined
-  ///
   /// @return
-  ///     Returns \b true if the host OS version info was filled in
-  ///     and \b false otherwise.
+  ///     Returns the version tuple of the host OS. In case of failure an empty
+  ///     VersionTuple is returner.
   //------------------------------------------------------------------
-  virtual bool GetHostOSVersion(uint32_t &major, uint32_t &minor,
-                                uint32_t &update) {
-    major = UINT32_MAX;
-    minor = UINT32_MAX;
-    update = UINT32_MAX;
-    return false;
-  }
+  virtual llvm::VersionTuple GetHostOSVersion() { return llvm::VersionTuple(); }
 
   //------------------------------------------------------------------
   /// Get the target object pointer for this module.

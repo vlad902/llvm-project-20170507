@@ -300,6 +300,11 @@ def VirtualCallChecker : Checker<"VirtualCall">,
 
 let ParentPackage = CplusplusAlpha in {
 
+def DanglingInternalBufferChecker : Checker<"DanglingInternalBuffer">,
+  HelpText<"Check for internal raw pointers of C++ standard library containers "
+           "used after deallocation">,
+  DescFile<"DanglingInternalBufferChecker.cpp">;
+
 def DeleteWithNonVirtualDtorChecker : Checker<"DeleteWithNonVirtualDtor">,
   HelpText<"Reports destructions of polymorphic objects with a non-virtual "
            "destructor in their base class">,
@@ -313,6 +318,10 @@ def MisusedMovedObjectChecker: Checker<"MisusedMovedObject">,
      HelpText<"Method calls on a moved-from object and copying a moved-from "
               "object will be reported">,
      DescFile<"MisusedMovedObjectChecker.cpp">;
+
+def UninitializedObjectChecker: Checker<"UninitializedObject">,
+     HelpText<"Reports uninitialized fields after object construction">,
+     DescFile<"UninitializedObjectChecker.cpp">;
 
 } // end: "alpha.cplusplus"
 

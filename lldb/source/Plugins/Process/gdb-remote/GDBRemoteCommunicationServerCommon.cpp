@@ -269,19 +269,10 @@ GDBRemoteCommunicationServerCommon::Handle_qHostInfo(
     break;
   }
 
-  uint32_t major = UINT32_MAX;
-  uint32_t minor = UINT32_MAX;
-  uint32_t update = UINT32_MAX;
-  if (HostInfo::GetOSVersion(major, minor, update)) {
-    if (major != UINT32_MAX) {
-      response.Printf("os_version:%u", major);
-      if (minor != UINT32_MAX) {
-        response.Printf(".%u", minor);
-        if (update != UINT32_MAX)
-          response.Printf(".%u", update);
-      }
-      response.PutChar(';');
-    }
+  llvm::VersionTuple version = HostInfo::GetOSVersion();
+  if (!version.empty()) {
+    response.Format("os_version:{0}", version.getAsString());
+    response.PutChar(';');
   }
 
   std::string s;
@@ -361,7 +352,8 @@ GDBRemoteCommunicationServerCommon::Handle_qfProcessInfo(
         StringExtractor extractor(value);
         std::string file;
         extractor.GetHexByteString(file);
-        match_info.GetProcessInfo().GetExecutableFile().SetFile(file, false);
+        match_info.GetProcessInfo().GetExecutableFile().SetFile(
+            file, false, FileSpec::Style::native);
       } else if (key.equals("name_match")) {
         NameMatch name_match = llvm::StringSwitch<NameMatch>(value)
                                    .Case("equals", NameMatch::Equals)
@@ -1031,7 +1023,8 @@ GDBRemoteCommunicationServerCommon::Handle_A(StringExtractorGDBRemote &packet) {
 
               if (success) {
                 if (arg_idx == 0)
-                  m_process_launch_info.GetExecutableFile().SetFile(arg, false);
+                  m_process_launch_info.GetExecutableFile().SetFile(
+                      arg, false, FileSpec::Style::native);
                 m_process_launch_info.GetArguments().AppendArgument(arg);
                 if (log)
                   log->Printf("LLGSPacketHandler::%s added arg %d: \"%s\"",
