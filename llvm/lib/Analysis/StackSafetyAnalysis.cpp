@@ -553,7 +553,7 @@ private:
   FunctionMap &Functions;
   // Callee-to-Caller multimap.
   DenseMap<FunctionID, SmallVector<FunctionID, 4>> Callers;
-  SmallVector<FunctionID, 64> WorkList;
+  SetVector<FunctionID> WorkList;
   DenseMap<FunctionID, int> UpdateCount;
 };
 
@@ -726,7 +726,9 @@ void StackSafetyDataFlowAnalysis::updateOneNode(FunctionID ID,
                       << (UpdateToFullSet ? ", full-set" : "") << "] "
                       << Functions[ID]->name(ID) << "\n");
     // Callers of this function may need updating.
-    WorkList.append(Callers[ID].begin(), Callers[ID].end());
+    for (auto &CallerID : Callers[ID])
+      WorkList.insert(CallerID);
+
     UpdateCount[ID]++;
   }
 }
@@ -736,14 +738,21 @@ void StackSafetyDataFlowAnalysis::runDataFlow() {
   WorkList.clear();
 
   for (auto &FN : Functions) {
-    FunctionID Caller = FN.first;
     SSFunctionSummary &FS = *FN.second;
+    SmallVector<FunctionID, 16> Callees;
     for (auto &AS : FS.Allocas)
-      for (auto &CS  : AS.Summary.Calls)
-	Callers[CS.Callee].push_back(Caller);
+      for (auto &CS : AS.Summary.Calls)
+        Callees.push_back(CS.Callee);
     for (auto &PS : FS.Params)
-      for (auto &CS  : PS.Summary.Calls)
-	Callers[CS.Callee].push_back(Caller);
+      for (auto &CS : PS.Summary.Calls)
+        Callees.push_back(CS.Callee);
+
+    std::sort(Callees.begin(), Callees.end());
+    Callees.erase(std::unique(Callees.begin(), Callees.end()), Callees.end());
+
+    FunctionID Caller = FN.first;
+    for (FunctionID Callee : Callees)
+      Callers[Callee].push_back(Caller);
   }
 
   for (auto &FN : Functions)
