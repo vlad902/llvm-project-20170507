@@ -18,6 +18,8 @@
 ; BC: <GLOBALVAL_SUMMARY_BLOCK
 ; BC-NEXT: <VERSION
 ; BC-NEXT: <PERMODULE {{.*}} op0=1 op1=0
+; BC-NEXT: <ALLOCAS
+; BC-NEXT: <PARAMS
 ; BC-NEXT: <PERMODULE {{.*}} op0=2 op1=0
 ; BC-NEXT: <PERMODULE {{.*}} op0=3 op1=7
 ; BC-NEXT: <PERMODULE {{.*}} op0=4 op1=16
@@ -47,6 +49,7 @@ entry:
 ; Function Attrs: nounwind uwtable
 define i32 @bar(i32 %x) #0 {
 entry:
+  %y = alloca i32, align 4
   ret i32 %x
 }
 
