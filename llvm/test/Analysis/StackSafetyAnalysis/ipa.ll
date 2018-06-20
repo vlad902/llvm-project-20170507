@@ -16,7 +16,6 @@
 ; RUN:  -r %t.summ0.bc,ExternalCall, \
 ; RUN:  -r %t.summ0.bc,PreemptableWrite1, \
 ; RUN:  -r %t.summ0.bc,InterposableWrite1, \
-; RUN:  -r %t.summ0.bc,AliasWrite1, \
 ; RUN:  -r %t.summ0.bc,ReturnDependent, \
 ; RUN:  -r %t.summ0.bc,Rec2, \
 ; RUN:  -r %t.summ0.bc,RecursiveNoOffset, \
@@ -29,7 +28,6 @@
 ; RUN:  -r %t.summ0.bc,f6,px \
 ; RUN:  -r %t.summ0.bc,PreemptableCall,px \
 ; RUN:  -r %t.summ0.bc,InterposableCall,px \
-; RUN:  -r %t.summ0.bc,AliasCall,px \
 ; RUN:  -r %t.summ0.bc,PrivateCall,px \
 ; RUN:  -r %t.summ0.bc,f7,px \
 ; RUN:  -r %t.summ0.bc,f8left,px \
@@ -49,7 +47,6 @@
 ; RUN:  -r %t.summ1.bc,ExternalCall,px \
 ; RUN:  -r %t.summ1.bc,PreemptableWrite1,px \
 ; RUN:  -r %t.summ1.bc,InterposableWrite1,px \
-; RUN:  -r %t.summ1.bc,AliasWrite1,px \
 ; RUN:  -r %t.summ1.bc,ReturnDependent,px \
 ; RUN:  -r %t.summ1.bc,Rec0,px \
 ; RUN:  -r %t.summ1.bc,Rec1,px \
@@ -69,7 +66,6 @@ declare void @Write8(i8* %p)
 declare dso_local void @ExternalCall(i8* %p)
 declare void @PreemptableWrite1(i8* %p)
 declare void @InterposableWrite1(i8* %p)
-declare void @AliasWrite1(i8* %p)
 declare i8* @ReturnDependent(i8* %p)
 declare void @Rec2(i8* %p)
 declare void @RecursiveNoOffset(i32* %p, i32 %size, i32* %acc)
@@ -170,19 +166,6 @@ entry:
 ; WITHOUTLTO: %x = alloca i32, align 4{{$}}
 ; THINLTO: %x = alloca i32, align 4, !stack-safe
   call void @InterposableWrite1(i8* %x1)
-  ret void
-}
-
-; Call to an alias
-define void @AliasCall() {
-; CHECK-LABEL: define void @AliasCall
-entry:
-  %x = alloca i32, align 4
-  %x1 = bitcast i32* %x to i8*
-; TODO: We don't currently look-through aliases with ThinLTO so %x is not marked !stack-safe
-; WITHOUTLTO: %x = alloca i32, align 4, !stack-safe
-; THINLTO: %x = alloca i32, align 4{{$}}
-  call void @AliasWrite1(i8* %x1)
   ret void
 }
 
