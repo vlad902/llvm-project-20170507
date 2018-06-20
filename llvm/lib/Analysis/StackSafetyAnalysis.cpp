@@ -238,7 +238,8 @@ SSFunctionSummary::SSFunctionSummary(FunctionSummary &FS) {
 }
 
 SSFunctionSummary::SSFunctionSummary(GlobalAlias &A) {
-  assert(isa<Function>(A.getAliasee()));
+  Function *DestFn = dyn_cast<Function>(A.getAliasee()->stripPointerCasts());
+  assert(DestFn);
 
   this->GV = &A;
   this->GVS = nullptr;
@@ -246,8 +247,6 @@ SSFunctionSummary::SSFunctionSummary(GlobalAlias &A) {
   this->Interposable = A.isInterposable();
 
   // 'Forward' all parameters to this alias to the aliasee
-  Function *DestFn = cast<Function>(A.getAliasee());
-
   for (unsigned ArgNo = 0; ArgNo < DestFn->arg_size(); ArgNo++) {
     this->Params.emplace_back();
     SSUseSummary &US = this->Params.back().Summary;

@@ -4,6 +4,7 @@ target triple = "x86_64-unknown-linux-gnu"
 @InterposableAliasWrite1 = linkonce dso_local alias void(i8*), void(i8*)* @Write1
 @PreemptableAliasWrite1 = dso_preemptable alias void(i8*), void(i8*)* @Write1
 @AliasWrite1 = dso_local alias void(i8*), void(i8*)* @Write1
+@BitcastAliasWrite1 = dso_local alias void(i32*), bitcast (void(i8*)* @Write1 to void(i32*)*)
 
 define dso_local void @Write1(i8* %p) {
 entry:
