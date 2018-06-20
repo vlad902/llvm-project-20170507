@@ -11,12 +11,15 @@
 ; RUN:  -r %t.summ0.bc,PreemptableAliasWrite1, \
 ; RUN:  -r %t.summ0.bc,InterposableAliasWrite1, \
 ; RUN:  -r %t.summ0.bc,AliasWrite1, \
+; RUN:  -r %t.summ0.bc,BitcastAliasWrite1, \
 ; RUN:  -r %t.summ0.bc,PreemptableAliasCall,px \
 ; RUN:  -r %t.summ0.bc,InterposableAliasCall,px \
 ; RUN:  -r %t.summ0.bc,AliasCall,px \
+; RUN:  -r %t.summ0.bc,BitcastAliasCall,px \
 ; RUN:  -r %t.summ1.bc,PreemptableAliasWrite1,px \
 ; RUN:  -r %t.summ1.bc,InterposableAliasWrite1,px \
 ; RUN:  -r %t.summ1.bc,AliasWrite1,px \
+; RUN:  -r %t.summ1.bc,BitcastAliasWrite1,px \
 ; RUN:  -r %t.summ1.bc,Write1,px
 
 ; RUN: llvm-dis %t.lto.1.4.opt.bc -o - | FileCheck --check-prefixes=CHECK,THINLTO %s
@@ -27,6 +30,7 @@ target triple = "x86_64-unknown-linux-gnu"
 declare void @PreemptableAliasWrite1(i8* %p)
 declare void @InterposableAliasWrite1(i8* %p)
 declare void @AliasWrite1(i8* %p)
+declare void @BitcastAliasWrite1(i32* %p)
 
 ; Call to dso_preemptable alias to a dso_local aliasee
 define void @PreemptableAliasCall() {
@@ -57,5 +61,15 @@ entry:
   %x = alloca i8
 ; CHECK: %x = alloca i8, !stack-safe
   call void @AliasWrite1(i8* %x)
+  ret void
+}
+
+; Call to a bitcasted dso_local/non-inteprosable alias/aliasee
+define void @BitcastAliasCall() {
+; CHECK-LABEL: define void @BitcastAliasCall
+entry:
+  %x = alloca i32
+; CHECK: %x = alloca i32, !stack-safe
+  call void @BitcastAliasWrite1(i32* %x)
   ret void
 }
