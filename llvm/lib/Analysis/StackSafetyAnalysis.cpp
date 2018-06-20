@@ -118,19 +118,21 @@ struct SSUseSummary {
   const char *Reason;
 
   struct SSCallSummary {
-    Function *F;
+    GlobalValue *GV; // Optional. May be a Function or a GlobalAlias
     FunctionID Callee;
     unsigned ParamNo;
     ConstantRange Range;
-    SSCallSummary(Function *F, unsigned ParamNo)
-        : F(F), Callee(F->getGUID()), ParamNo(ParamNo), Range(64, false) {}
-    SSCallSummary(Function *F, unsigned ParamNo, ConstantRange Range)
-        : F(F), Callee(F->getGUID()), ParamNo(ParamNo), Range(Range) {}
+    SSCallSummary(GlobalValue *GV, unsigned ParamNo)
+        : GV(GV), Callee(GV->getGUID()), ParamNo(ParamNo), Range(64, false) {}
+    SSCallSummary(GlobalValue *GV, unsigned ParamNo, ConstantRange Range)
+        : GV(GV), Callee(GV->getGUID()), ParamNo(ParamNo), Range(Range) {}
+    SSCallSummary(FunctionID Callee, unsigned ParamNo)
+        : GV(nullptr), Callee(Callee), ParamNo(ParamNo), Range(64, false) {}
     SSCallSummary(FunctionID Callee, unsigned ParamNo, ConstantRange Range)
-        : F(nullptr), Callee(Callee), ParamNo(ParamNo), Range(Range) {}
+        : GV(nullptr), Callee(Callee), ParamNo(ParamNo), Range(Range) {}
     std::string name() {
-      if (F)
-        return "@" + F->getName().str();
+      if (GV)
+        return "@" + GV->getName().str();
       return "#" + utostr(Callee);
     }
   };
@@ -184,20 +186,20 @@ struct SSFunctionSummary {
   // Constructor that converts from a FunctionSummary
   SSFunctionSummary(FunctionSummary &FS);
 
-  Function *F;         // Optional
-  FunctionSummary *FS; // Optional
+  GlobalValue *GV;         // Optional. May be a Function or a GlobalAlias
+  GlobalValueSummary *GVS; // Optional. May be a Function or an Alias summary
   SmallVector<SSAllocaSummary, 4> Allocas;
   SmallVector<SSParamSummary, 4> Params;
   unsigned DSOLocal : 1;
   unsigned Interposable : 1;
 
   std::string name(FunctionID ID) {
-    if (F)
-      return "@" + F->getName().str();
+    if (GV)
+      return "@" + GV->getName().str();
 
     std::string result = "#" + utostr(ID);
-    if (FS)
-      result += ("[" + FS->modulePath() + "]").str();
+    if (GVS)
+      result += ("[" + GVS->modulePath() + "]").str();
     return result;
   }
   void dump(FunctionID ID) {
@@ -210,10 +212,10 @@ struct SSFunctionSummary {
 };
 
 SSFunctionSummary::SSFunctionSummary(FunctionSummary &FS) {
-  this->F = nullptr;
-  this->FS = &FS;
+  this->GV = nullptr;
+  this->GVS = &FS;
   this->DSOLocal = FS.isDSOLocal();
-  // Non-prevailing functions are not marked live.
+  // Non-prevailing definitions are not marked live.
   this->Interposable = !FS.isLive();
   for (auto &AS : FS.allocas()) {
     this->Allocas.emplace_back(nullptr, AS.Size);
@@ -501,7 +503,7 @@ bool StackSafetyLocalAnalysis::run(SSFunctionSummary &FS) {
          "Can't run StackSafety on a function declaration");
 
   LLVM_DEBUG(dbgs() << "[StackSafety] " << F.getName() << "\n");
-  FS.F = &F;
+  FS.GV = &F;
   FS.DSOLocal = F.isDSOLocal();
   FS.Interposable = F.isInterposable();
 
@@ -938,7 +940,7 @@ bool StackSafetyGlobalAnalysis::runOnModule(Module &M) {
 
     FunctionSummary *FS = dyn_cast<FunctionSummary>(GVS);
     auto Summary = llvm::make_unique<SSFunctionSummary>(*FS);
-    Summary->F = &F;
+    Summary->GV = &F;
 
     // Set the SSAllocaSummary AllocaInst pointers if the function is alive
     // (allocas for dead functions are dropped in stackSafetyGlobalAnalysis)
