@@ -112,6 +112,8 @@ std::vector<AllocaInst *> allocas(Function *F) {
 using FunctionID = GlobalValue::GUID;
 
 struct SSUseSummary {
+  // Range and LocalRange are allowed to be empty-set when there are no known
+  // accesses.
   ConstantRange Range;
   ConstantRange LocalRange;
   const Instruction *BadI;
@@ -122,14 +124,16 @@ struct SSUseSummary {
     FunctionID Callee;
     unsigned ParamNo;
     ConstantRange Range;
-    SSCallSummary(GlobalValue *GV, unsigned ParamNo)
-        : GV(GV), Callee(GV->getGUID()), ParamNo(ParamNo), Range(64, false) {}
     SSCallSummary(GlobalValue *GV, unsigned ParamNo, ConstantRange Range)
         : GV(GV), Callee(GV->getGUID()), ParamNo(ParamNo), Range(Range) {}
-    SSCallSummary(FunctionID Callee, unsigned ParamNo)
-        : GV(nullptr), Callee(Callee), ParamNo(ParamNo), Range(64, false) {}
     SSCallSummary(FunctionID Callee, unsigned ParamNo, ConstantRange Range)
         : GV(nullptr), Callee(Callee), ParamNo(ParamNo), Range(Range) {}
+#ifndef NDEBUG
+    // Ensure that Range is never set to empty-set, this is an invalid access
+    // range, and can accidentally cause empty-set to be propagated due to use
+    // with ConstantRange::add()
+    ~SSCallSummary() { assert(!Range.isEmptySet()); }
+#endif
     std::string name() {
       if (GV)
         return "@" + GV->getName().str();
@@ -368,6 +372,9 @@ StackSafetyLocalAnalysis::OffsetFromAlloca(Value *Addr,
   AllocaOffsetRewriter Rewriter(SE, AllocaPtr);
   const SCEV *Expr = Rewriter.visit(SE.getSCEV(Addr));
   ConstantRange OffsetRange = SE.getUnsignedRange(Expr).zextOrTrunc(64);
+  if (OffsetRange.isEmptySet())
+    return ConstantRange(64);
+
   return OffsetRange;
   // if (!OffsetRange.isSingleElement())
   //   return None;
@@ -389,6 +396,9 @@ ConstantRange StackSafetyLocalAnalysis::GetAccessRange(Value *Addr,
   ConstantRange SizeRange =
       ConstantRange(APInt(64, 0), APInt(64, AccessSize));
   ConstantRange AccessRange = AccessStartRange.add(SizeRange);
+  if (AccessRange.isEmptySet())
+    return ConstantRange(64);
+
   return AccessRange;
 }
 
@@ -742,6 +752,9 @@ bool StackSafetyDataFlowAnalysis::updateOneUse(SSUseSummary &US,
                                                bool UpdateToFullSet) {
   bool Changed = false;
   for (auto &CS : US.Calls) {
+    assert(!CS.Range.isEmptySet() &&
+           "Param range can't be empty-set, invalid access range");
+
     ConstantRange CalleeRange = getArgumentAccessRange(CS.Callee, CS.ParamNo);
     CalleeRange = CalleeRange.add(CS.Range);
     if (!US.Range.contains(CalleeRange)) {
