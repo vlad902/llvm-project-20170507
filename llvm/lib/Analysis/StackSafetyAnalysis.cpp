@@ -207,7 +207,8 @@ struct SSFunctionSummary {
     return result;
   }
   void dump(FunctionID ID) {
-    dbgs() << "  " << name(ID) << "\n";
+    dbgs() << "  " << name(ID) << (DSOLocal ? "" : " dso_preemptable")
+           << (Interposable ? " interposable" : "") << "\n";
     for (unsigned i = 0; i < Params.size(); ++i)
       Params[i].dump(i);
     for (auto &AS : Allocas)
@@ -238,8 +239,11 @@ SSFunctionSummary::SSFunctionSummary(FunctionSummary &FS) {
 }
 
 SSFunctionSummary::SSFunctionSummary(GlobalAlias &A) {
-  Function *DestFn = dyn_cast<Function>(A.getAliasee()->stripPointerCasts());
-  assert(DestFn);
+  // This alias may point to another alias, we want to make sure to avoid
+  // skipping intermediate aliases in case they are dso_preemptable
+  GlobalValue *Aliasee = cast<GlobalValue>(
+      A.getAliasee()->stripPointerCastsNoFollowAliases());
+  FunctionType *FnType = cast<FunctionType>(Aliasee->getValueType());
 
   this->GV = &A;
   this->GVS = nullptr;
@@ -247,10 +251,10 @@ SSFunctionSummary::SSFunctionSummary(GlobalAlias &A) {
   this->Interposable = A.isInterposable();
 
   // 'Forward' all parameters to this alias to the aliasee
-  for (unsigned ArgNo = 0; ArgNo < DestFn->arg_size(); ArgNo++) {
+  for (unsigned ArgNo = 0; ArgNo < FnType->getNumParams(); ArgNo++) {
     this->Params.emplace_back();
     SSUseSummary &US = this->Params.back().Summary;
-    US.Calls.emplace_back(DestFn, ArgNo);
+    US.Calls.emplace_back(Aliasee, ArgNo, ConstantRange(APInt(64, 0)));
   }
 }
 
@@ -267,7 +271,7 @@ SSFunctionSummary::SSFunctionSummary(AliasSummary &AS) {
   for (unsigned ArgNo = 0; ArgNo < DestFn.params().size(); ArgNo++) {
     this->Params.emplace_back();
     SSUseSummary &US = this->Params.back().Summary;
-    US.Calls.emplace_back(AS.getAliaseeGUID(), ArgNo);
+    US.Calls.emplace_back(AS.getAliaseeGUID(), ArgNo, ConstantRange(APInt(64, 0)));
   }
 }
 
