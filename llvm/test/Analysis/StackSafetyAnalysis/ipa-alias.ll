@@ -51,9 +51,8 @@ entry:
   call void @PreemptableAliasWrite1(i8* %x1)
 
   %x2 = alloca i8
-; TODO: This should work for ThinLTO but doesn't due to https://bugs.llvm.org/show_bug.cgi?id=37884
-; WITHOUTLTO: %x2 = alloca i8{{$}}
-; THINLTO: %x2 = alloca i8, !stack-safe
+; Alias to a preemptable alias is not preemptable
+; CHECK: %x2 = alloca i8, !stack-safe
   call void @AliasToPreemptableAliasWrite1(i8* %x2)
   ret void
 }
@@ -70,7 +69,7 @@ entry:
   ret void
 }
 
-; Call to a dso_local/non-inteprosable alias/aliasee
+; Call to a dso_local/non-interposable alias/aliasee
 define void @AliasCall() {
 ; CHECK-LABEL: define void @AliasCall
 entry:
@@ -80,7 +79,7 @@ entry:
   ret void
 }
 
-; Call to a bitcasted dso_local/non-inteprosable alias/aliasee
+; Call to a bitcasted dso_local/non-interposable alias/aliasee
 define void @BitcastAliasCall() {
 ; CHECK-LABEL: define void @BitcastAliasCall
 entry:

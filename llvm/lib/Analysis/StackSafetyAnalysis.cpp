@@ -239,10 +239,7 @@ SSFunctionSummary::SSFunctionSummary(FunctionSummary &FS) {
 }
 
 SSFunctionSummary::SSFunctionSummary(GlobalAlias &A) {
-  // This alias may point to another alias, we want to make sure to avoid
-  // skipping intermediate aliases in case they are dso_preemptable
-  GlobalValue *Aliasee = cast<GlobalValue>(
-      A.getAliasee()->stripPointerCastsNoFollowAliases());
+  GlobalObject *Aliasee = A.getBaseObject();
   FunctionType *FnType = cast<FunctionType>(Aliasee->getValueType());
 
   this->GV = &A;
@@ -259,7 +256,7 @@ SSFunctionSummary::SSFunctionSummary(GlobalAlias &A) {
 }
 
 SSFunctionSummary::SSFunctionSummary(AliasSummary &AS) {
-  assert(isa<FunctionSummary>(AS.getAliasee()));
+  assert(isa<FunctionSummary>(AS.getBaseObject()));
 
   this->GV = nullptr;
   this->GVS = &AS;
@@ -267,7 +264,9 @@ SSFunctionSummary::SSFunctionSummary(AliasSummary &AS) {
   // Non-prevailing definitions are not marked live.
   this->Interposable = !AS.isLive();
 
-  FunctionSummary &DestFn = cast<FunctionSummary>(AS.getAliasee());
+  // 'Forward' all parameters to this alias to the aliasee, since we don't have
+  // an alias type, we copy the number of parameters from the base object.
+  FunctionSummary &DestFn = cast<FunctionSummary>(*AS.getBaseObject());
   for (unsigned ArgNo = 0; ArgNo < DestFn.params().size(); ArgNo++) {
     this->Params.emplace_back();
     SSUseSummary &US = this->Params.back().Summary;
@@ -972,8 +971,8 @@ bool StackSafetyGlobalAnalysis::runOnModule(Module &M) {
           if (isa<FunctionSummary>(ImportedGVS))
             GVS = &*ImportedGVS;
           else if (auto *AS = dyn_cast<AliasSummary>(&*ImportedGVS))
-            if (isa<FunctionSummary>(AS->getAliasee()))
-              GVS = const_cast<GlobalValueSummary *>(&AS->getAliasee());
+            if (auto *Base = dyn_cast<FunctionSummary>(AS->getBaseObject()))
+              GVS = Base;
 
           if (GVS && GVS->isLive())
             break;
