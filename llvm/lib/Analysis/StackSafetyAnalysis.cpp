@@ -978,9 +978,6 @@ bool StackSafetyGlobalAnalysis::runOnModule(Module &M) {
             break;
         }
       }
-
-      assert(GVS->isLive() &&
-             "Promoted/internalized/imported function must be live");
     }
 
     assert(GVS && "GlobalValueSummary for function not found");
