@@ -597,9 +597,9 @@ public:
 private:
   ConstantRange getArgumentAccessRange(FunctionID ID, unsigned ParamNo,
                                        bool Local);
-  void printCallWithOffset(llvm::raw_ostream &OS, FunctionID Callee,
-                           unsigned ParamNo, ConstantRange Offset,
-                           StringRef Indent);
+  void printCallWithOffset(llvm::raw_ostream &OS,
+                           SSUseSummary::SSCallSummary &CS,
+                           ConstantRange Offset, StringRef Indent);
   void describeCallIfUnsafe(llvm::raw_ostream &OS, ConstantRange AllocaRange,
                             ConstantRange PtrRange,
                             SSUseSummary::SSCallSummary &CS, std::string Indent,
@@ -642,16 +642,15 @@ ConstantRange StackSafetyDataFlowAnalysis::getArgumentAccessRange(
 }
 
 void StackSafetyDataFlowAnalysis::printCallWithOffset(llvm::raw_ostream &OS,
-                                                      FunctionID Callee,
-                                                      unsigned ParamNo,
+                                                      SSUseSummary::SSCallSummary &CS,
                                                       ConstantRange Offset,
                                                       StringRef Indent) {
-  if (Functions.count(Callee))
-    OS << Indent << "=> " << Functions[Callee]->name(Callee);
+  if (CS.GV)
+    OS << Indent << "=> " << CS.GV->getName();
   else
-    OS << Indent << "=> #" << Callee;
+    OS << Indent << "=> #" << CS.Callee;
 
-  OS << "(#" << ParamNo << ", +" << Offset << ")\n";
+  OS << "(#" << CS.ParamNo << ", +" << Offset << ")\n";
 }
 
 void StackSafetyDataFlowAnalysis::describeCallIfUnsafe(
@@ -661,7 +660,7 @@ void StackSafetyDataFlowAnalysis::describeCallIfUnsafe(
   ConstantRange ParamRange = PtrRange.add(CS.Range);
 
   if (Visited.count(CS.Callee)) {
-    printCallWithOffset(OS, CS.Callee, CS.ParamNo, ParamRange, Indent);
+    printCallWithOffset(OS, CS, ParamRange, Indent);
     OS << Indent << "  <recursion>\n";
     return;
   }
@@ -670,7 +669,7 @@ void StackSafetyDataFlowAnalysis::describeCallIfUnsafe(
   auto IT = Functions.find(CS.Callee);
   // Unknown callee (outside of LTO domain or an indirect call).
   if (IT == Functions.end()) {
-    printCallWithOffset(OS, CS.Callee, CS.ParamNo, ParamRange, Indent);
+    printCallWithOffset(OS, CS, ParamRange, Indent);
     OS << Indent << "  external call\n";
     return;
   }
@@ -679,13 +678,13 @@ void StackSafetyDataFlowAnalysis::describeCallIfUnsafe(
   // The definition of this symbol may not be the definition in this linkage
   // unit.
   if (!FS.DSOLocal || FS.Interposable) {
-    printCallWithOffset(OS, CS.Callee, CS.ParamNo, ParamRange, Indent);
+    printCallWithOffset(OS, CS, ParamRange, Indent);
     OS << Indent << "  " << (FS.DSOLocal ? "" : "dso_preemptable ")
        << (FS.Interposable ? "interposable" : "") << "\n";
     return;
   }
   if (CS.ParamNo >= FS.Params.size()) {
-    printCallWithOffset(OS, CS.Callee, CS.ParamNo, ParamRange, Indent);
+    printCallWithOffset(OS, CS, ParamRange, Indent);
     OS << Indent << "  unknown argument\n";
     return;
   }
@@ -699,7 +698,7 @@ void StackSafetyDataFlowAnalysis::describeCallIfUnsafe(
   ConstantRange CalleeLocalRange = ParamRange.add(PS.Summary.LocalRange);
   bool LocalSafe = AllocaRange.contains(CalleeLocalRange);
   if (!LocalSafe) {
-    printCallWithOffset(OS, CS.Callee, CS.ParamNo, ParamRange, Indent);
+    printCallWithOffset(OS, CS, ParamRange, Indent);
     if (PS.Summary.BadI) {
       OS << Indent << "  " << PS.Summary.Reason << ": " << *PS.Summary.BadI
          << "\n";
@@ -710,7 +709,7 @@ void StackSafetyDataFlowAnalysis::describeCallIfUnsafe(
   }
 
   for (auto &OtherCS : PS.Summary.Calls) {
-    printCallWithOffset(OS, CS.Callee, CS.ParamNo, ParamRange, Indent);
+    printCallWithOffset(OS, CS, ParamRange, Indent);
     describeCallIfUnsafe(OS, AllocaRange, ParamRange.add(OtherCS.Range),
                          OtherCS, Indent + "  ", Visited);
   }
