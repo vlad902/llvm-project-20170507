@@ -593,6 +593,8 @@ public:
 
   bool run();
   bool addAllMetadata(Module &M);
+  void describeFunction(llvm::raw_ostream &OS, FunctionID ID,
+                        SSFunctionSummary &FS);
 
 private:
   ConstantRange getArgumentAccessRange(FunctionID ID, unsigned ParamNo,
@@ -605,8 +607,6 @@ private:
                             SSUseSummary::SSCallSummary &CS, std::string Indent,
                             DenseSet<FunctionID> &Visited);
   bool describeAlloca(llvm::raw_ostream &OS, SSAllocaSummary &AS);
-  void describeFunction(llvm::raw_ostream &OS, FunctionID ID,
-                        SSFunctionSummary &FS);
   bool updateOneUse(SSUseSummary &US, bool UpdateToFullSet);
   void updateOneNode(FunctionID ID, SSFunctionSummary &FS);
   void runDataFlow();
