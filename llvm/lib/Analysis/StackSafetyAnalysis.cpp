@@ -86,6 +86,16 @@ public:
   AllocaOffsetRewriter(ScalarEvolution &SE, const Value *AllocaPtr)
       : SCEVRewriteVisitor(SE), AllocaPtr(AllocaPtr) {}
 
+  const SCEV *visit(const SCEV *Expr) {
+    // Only re-write the expression if the alloca is used in an addition
+    // expression (it can be used in other types of expressions if it's cast to
+    // an int and passed as an argument.)
+    if (!isa<SCEVAddRecExpr>(Expr) && !isa<SCEVAddExpr>(Expr) &&
+        !isa<SCEVUnknown>(Expr))
+      return Expr;
+    return SCEVRewriteVisitor<AllocaOffsetRewriter>::visit(Expr);
+  }
+
   const SCEV *visitUnknown(const SCEVUnknown *Expr) {
     // FIXME: look through one or several levels of definitions?
     // This can be inttoptr(AllocaPtr) and SCEV would not unwrap
@@ -112,6 +122,8 @@ std::vector<AllocaInst *> allocas(Function *F) {
 using FunctionID = GlobalValue::GUID;
 
 struct SSUseSummary {
+  // Range and LocalRange are allowed to be empty-set when there are no known
+  // accesses.
   ConstantRange Range;
   ConstantRange LocalRange;
   const Instruction *BadI;
@@ -121,13 +133,11 @@ struct SSUseSummary {
     GlobalValue *GV; // Optional. May be a Function or a GlobalAlias
     FunctionID Callee;
     unsigned ParamNo;
+    // Range should never set to empty-set, that is an invalid access range
+    // that can cause empty-set to be propagated with ConstantRange::add
     ConstantRange Range;
-    SSCallSummary(GlobalValue *GV, unsigned ParamNo)
-        : GV(GV), Callee(GV->getGUID()), ParamNo(ParamNo), Range(64, false) {}
     SSCallSummary(GlobalValue *GV, unsigned ParamNo, ConstantRange Range)
         : GV(GV), Callee(GV->getGUID()), ParamNo(ParamNo), Range(Range) {}
-    SSCallSummary(FunctionID Callee, unsigned ParamNo)
-        : GV(nullptr), Callee(Callee), ParamNo(ParamNo), Range(64, false) {}
     SSCallSummary(FunctionID Callee, unsigned ParamNo, ConstantRange Range)
         : GV(nullptr), Callee(Callee), ParamNo(ParamNo), Range(Range) {}
     std::string name() {
@@ -371,6 +381,7 @@ StackSafetyLocalAnalysis::OffsetFromAlloca(Value *Addr,
   AllocaOffsetRewriter Rewriter(SE, AllocaPtr);
   const SCEV *Expr = Rewriter.visit(SE.getSCEV(Addr));
   ConstantRange OffsetRange = SE.getUnsignedRange(Expr).zextOrTrunc(64);
+  assert(!OffsetRange.isEmptySet());
   return OffsetRange;
   // if (!OffsetRange.isSingleElement())
   //   return None;
@@ -392,6 +403,7 @@ ConstantRange StackSafetyLocalAnalysis::GetAccessRange(Value *Addr,
   ConstantRange SizeRange =
       ConstantRange(APInt(64, 0), APInt(64, AccessSize));
   ConstantRange AccessRange = AccessStartRange.add(SizeRange);
+  assert(!AccessRange.isEmptySet());
   return AccessRange;
 }
 
@@ -745,6 +757,9 @@ bool StackSafetyDataFlowAnalysis::updateOneUse(SSUseSummary &US,
                                                bool UpdateToFullSet) {
   bool Changed = false;
   for (auto &CS : US.Calls) {
+    assert(!CS.Range.isEmptySet() &&
+           "Param range can't be empty-set, invalid access range");
+
     ConstantRange CalleeRange = getArgumentAccessRange(CS.Callee, CS.ParamNo);
     CalleeRange = CalleeRange.add(CS.Range);
     if (!US.Range.contains(CalleeRange)) {
