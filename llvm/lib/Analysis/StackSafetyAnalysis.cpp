@@ -597,13 +597,16 @@ public:
 private:
   ConstantRange getArgumentAccessRange(FunctionID ID, unsigned ParamNo,
                                        bool Local);
-  void printCallWithOffset(FunctionID Callee, unsigned ParamNo,
-                           ConstantRange Offset, StringRef Indent);
-  void describeCallIfUnsafe(ConstantRange AllocaRange, ConstantRange PtrRange,
+  void printCallWithOffset(llvm::raw_ostream &OS, FunctionID Callee,
+                           unsigned ParamNo, ConstantRange Offset,
+                           StringRef Indent);
+  void describeCallIfUnsafe(llvm::raw_ostream &OS, ConstantRange AllocaRange,
+                            ConstantRange PtrRange,
                             SSUseSummary::SSCallSummary &CS, std::string Indent,
                             DenseSet<FunctionID> &Visited);
-  bool describeAlloca(SSAllocaSummary &AS);
-  void describeFunction(FunctionID ID, SSFunctionSummary &FS);
+  bool describeAlloca(llvm::raw_ostream &OS, SSAllocaSummary &AS);
+  void describeFunction(llvm::raw_ostream &OS, FunctionID ID,
+                        SSFunctionSummary &FS);
   bool updateOneUse(SSUseSummary &US, bool UpdateToFullSet);
   void updateOneNode(FunctionID ID, SSFunctionSummary &FS);
   void runDataFlow();
@@ -638,27 +641,28 @@ ConstantRange StackSafetyDataFlowAnalysis::getArgumentAccessRange(
                : FS.Params[ParamNo].Summary.Range;
 }
 
-void StackSafetyDataFlowAnalysis::printCallWithOffset(FunctionID Callee,
+void StackSafetyDataFlowAnalysis::printCallWithOffset(llvm::raw_ostream &OS,
+                                                      FunctionID Callee,
                                                       unsigned ParamNo,
                                                       ConstantRange Offset,
                                                       StringRef Indent) {
   if (Functions.count(Callee))
-    dbgs() << Indent << "=> " << Functions[Callee]->name(Callee);
+    OS << Indent << "=> " << Functions[Callee]->name(Callee);
   else
-    dbgs() << Indent << "=> #" << Callee;
+    OS << Indent << "=> #" << Callee;
 
-  dbgs() << "(#" << ParamNo << ", +" << Offset << ")\n";
+  OS << "(#" << ParamNo << ", +" << Offset << ")\n";
 }
 
 void StackSafetyDataFlowAnalysis::describeCallIfUnsafe(
-    ConstantRange AllocaRange, ConstantRange PtrRange,
+    llvm::raw_ostream &OS, ConstantRange AllocaRange, ConstantRange PtrRange,
     SSUseSummary::SSCallSummary &CS, std::string Indent,
     DenseSet<FunctionID> &Visited) {
   ConstantRange ParamRange = PtrRange.add(CS.Range);
 
   if (Visited.count(CS.Callee)) {
-    printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
-    dbgs() << Indent << "  <recursion>\n";
+    printCallWithOffset(OS, CS.Callee, CS.ParamNo, ParamRange, Indent);
+    OS << Indent << "  <recursion>\n";
     return;
   }
   Visited.insert(CS.Callee);
@@ -666,8 +670,8 @@ void StackSafetyDataFlowAnalysis::describeCallIfUnsafe(
   auto IT = Functions.find(CS.Callee);
   // Unknown callee (outside of LTO domain or an indirect call).
   if (IT == Functions.end()) {
-    printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
-    dbgs() << Indent << "  external call\n";
+    printCallWithOffset(OS, CS.Callee, CS.ParamNo, ParamRange, Indent);
+    OS << Indent << "  external call\n";
     return;
   }
 
@@ -675,14 +679,14 @@ void StackSafetyDataFlowAnalysis::describeCallIfUnsafe(
   // The definition of this symbol may not be the definition in this linkage
   // unit.
   if (!FS.DSOLocal || FS.Interposable) {
-    printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
-    dbgs() << Indent << "  " << (FS.DSOLocal ? "" : "dso_preemptable ")
-           << (FS.Interposable ? "interposable" : "") << "\n";
+    printCallWithOffset(OS, CS.Callee, CS.ParamNo, ParamRange, Indent);
+    OS << Indent << "  " << (FS.DSOLocal ? "" : "dso_preemptable ")
+       << (FS.Interposable ? "interposable" : "") << "\n";
     return;
   }
   if (CS.ParamNo >= FS.Params.size()) {
-    printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
-    dbgs() << Indent << "  unknown argument\n";
+    printCallWithOffset(OS, CS.Callee, CS.ParamNo, ParamRange, Indent);
+    OS << Indent << "  unknown argument\n";
     return;
   }
 
@@ -695,62 +699,64 @@ void StackSafetyDataFlowAnalysis::describeCallIfUnsafe(
   ConstantRange CalleeLocalRange = ParamRange.add(PS.Summary.LocalRange);
   bool LocalSafe = AllocaRange.contains(CalleeLocalRange);
   if (!LocalSafe) {
-    printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
+    printCallWithOffset(OS, CS.Callee, CS.ParamNo, ParamRange, Indent);
     if (PS.Summary.BadI) {
-      dbgs() << Indent << "  " << PS.Summary.Reason << ": " << *PS.Summary.BadI
-             << "\n";
+      OS << Indent << "  " << PS.Summary.Reason << ": " << *PS.Summary.BadI
+         << "\n";
     } else {
-      dbgs() << Indent << "  unsafe local access (unknown)\n";
+      OS << Indent << "  unsafe local access (unknown)\n";
     }
     return;
   }
 
   for (auto &OtherCS : PS.Summary.Calls) {
-    printCallWithOffset(CS.Callee, CS.ParamNo, ParamRange, Indent);
-    describeCallIfUnsafe(AllocaRange, ParamRange.add(OtherCS.Range), OtherCS,
-                         Indent + "  ", Visited);
+    printCallWithOffset(OS, CS.Callee, CS.ParamNo, ParamRange, Indent);
+    describeCallIfUnsafe(OS, AllocaRange, ParamRange.add(OtherCS.Range),
+                         OtherCS, Indent + "  ", Visited);
   }
 }
 
-bool StackSafetyDataFlowAnalysis::describeAlloca(SSAllocaSummary &AS) {
-  dbgs() << "    alloca [" << AS.Size << " bytes]";
+bool StackSafetyDataFlowAnalysis::describeAlloca(llvm::raw_ostream &OS,
+                                                 SSAllocaSummary &AS) {
+  OS << "    alloca [" << AS.Size << " bytes]";
   if (AS.AI)
-    dbgs() << " %" << AS.AI->getName();
-  dbgs() << "\n";
+    OS << " %" << AS.AI->getName();
+  OS << "\n";
   ConstantRange AllocaRange{APInt(64, 0), APInt(64, AS.Size)};
   bool Safe = AllocaRange.contains(AS.Summary.Range);
   if (Safe) {
-    dbgs() << "      safe\n";
+    OS << "      safe\n";
     return true;
   }
   bool LocalSafe = AllocaRange.contains(AS.Summary.LocalRange);
   if (!LocalSafe) {
     if (AS.Summary.BadI) {
-      dbgs() << "      " << AS.Summary.Reason << ": " << *AS.Summary.BadI
-             << "\n";
+      OS << "      " << AS.Summary.Reason << ": " << *AS.Summary.BadI << "\n";
     } else {
-      dbgs() << "      unsafe local access (unknown)\n";
+      OS << "      unsafe local access (unknown)\n";
     }
     return false;
   }
 
   DenseSet<FunctionID> Visited;
   for (auto &CS : AS.Summary.Calls) {
-    describeCallIfUnsafe(AllocaRange, ConstantRange(APInt(64, 0), APInt(64, 1)),
-                         CS, "      ", Visited);
+    describeCallIfUnsafe(OS, AllocaRange,
+                         ConstantRange(APInt(64, 0), APInt(64, 1)), CS,
+                         "      ", Visited);
   }
   return false;
 }
 
-void StackSafetyDataFlowAnalysis::describeFunction(FunctionID ID,
+void StackSafetyDataFlowAnalysis::describeFunction(llvm::raw_ostream &OS,
+                                                   FunctionID ID,
                                                    SSFunctionSummary &FS) {
-  dbgs() << "  " << Functions[ID]->name(ID) << "\n";
+  OS << "  " << Functions[ID]->name(ID) << "\n";
   bool Safe = true;
   for (auto &AS : FS.Allocas) {
-    Safe &= describeAlloca(AS);
+    Safe &= describeAlloca(OS, AS);
   }
   if (Safe)
-    dbgs() << "    function-safe\n";
+    OS << "    function-safe\n";
 }
 
 bool StackSafetyDataFlowAnalysis::updateOneUse(SSUseSummary &US,
@@ -842,7 +848,7 @@ bool StackSafetyDataFlowAnalysis::run() {
   verifyFixedPoint(); // Only in Release+Asserts?
 
   LLVM_DEBUG(dbgs() << "============!!!\n");
-  LLVM_DEBUG(for (auto &FN : Functions) describeFunction(FN.first, *FN.second));
+  LLVM_DEBUG(for (auto &FN : Functions) describeFunction(dbgs(), FN.first, *FN.second));
   return true;
 }
 
