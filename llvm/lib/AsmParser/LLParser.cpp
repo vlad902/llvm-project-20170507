@@ -7579,13 +7579,16 @@ bool LLParser::ParseFunctionSummary(std::string Name, GlobalValue::GUID GUID,
   if (ParseToken(lltok::rparen, "expected ')' here"))
     return true;
 
+  // TODO: Parse Alloca/LocalUse info as well
   auto FS = llvm::make_unique<FunctionSummary>(
       GVFlags, InstCount, FFlags, std::move(Refs), std::move(Calls),
       std::move(TypeIdInfo.TypeTests),
       std::move(TypeIdInfo.TypeTestAssumeVCalls),
       std::move(TypeIdInfo.TypeCheckedLoadVCalls),
       std::move(TypeIdInfo.TypeTestAssumeConstVCalls),
-      std::move(TypeIdInfo.TypeCheckedLoadConstVCalls));
+      std::move(TypeIdInfo.TypeCheckedLoadConstVCalls),
+      ArrayRef<FunctionSummary::Alloca>{},
+      ArrayRef<FunctionSummary::LocalUse>{});
 
   FS->setModulePath(ModulePath);
 
